@@ -56,6 +56,8 @@ jobs:
             target: aarch64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            # Disable PDB debug info on Windows to avoid disk space exhaustion
+            extra_rustflags: "-C debuginfo=0"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -75,6 +77,11 @@ jobs:
         shell: bash
         run: rm -f .cargo/config.toml
 
+      - name: Set RUSTFLAGS for Windows (no PDB)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-D warnings -C debuginfo=0" >> "$GITHUB_ENV"
+
       - name: Build workspace
         run: >
           cargo build
@@ -90,11 +97,9 @@ jobs:
             libvulkan-dev
 
       - name: Build GUI
-        if: runner.os != 'Windows'
         run: cargo build -p lsl-rec-gui --target ${{ matrix.target }}
 
       - name: Build bridge
-        if: runner.os != 'Windows'
         run: >
           cargo build -p lsl-wasm --features bridge --bin lsl-bridge
           --target ${{ matrix.target }}
