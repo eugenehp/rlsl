@@ -18,8 +18,8 @@ RUN cargo build --release \
     -p lsl-convert \
     && cargo build --release -p lsl-wasm --features bridge --bin lsl-bridge
 
-# ── Runtime stage ────────────────────────────────────────────────────
-FROM debian:bookworm-slim
+# ── Runtime stage (must match builder's glibc version) ───────────────
+FROM debian:sid-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
