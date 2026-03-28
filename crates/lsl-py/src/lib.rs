@@ -33,12 +33,6 @@ use numpy::{PyArray1, PyArray2};
 use pyo3::exceptions::{PyRuntimeError, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 
-// ── Channel format constants ─────────────────────────────────────────
-
-/// Undefined channel format.
-#[pyfunction]
-fn cf_undefined() -> i32 { ChannelFormat::Undefined as i32 }
-
 // ── StreamInfo ───────────────────────────────────────────────────────
 
 /// Stream metadata — describes a stream's name, type, channel count,
@@ -275,7 +269,7 @@ impl PyStreamOutlet {
 struct PyStreamInlet {
     inner: RsInlet,
     nch: usize,
-    fmt: ChannelFormat,
+    _fmt: ChannelFormat,
 }
 
 #[pymethods]
@@ -289,7 +283,7 @@ impl PyStreamInlet {
         PyStreamInlet {
             inner: RsInlet::new(&info.inner, max_buflen, max_chunklen, recover),
             nch,
-            fmt,
+            _fmt: fmt,
         }
     }
 

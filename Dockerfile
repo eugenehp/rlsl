@@ -1,5 +1,5 @@
 # ── Builder stage ─────────────────────────────────────────────────────
-FROM rust:1.85-bookworm AS builder
+FROM rust:latest AS builder
 
 # Install mold linker for fast linking
 RUN apt-get update && apt-get install -y --no-install-recommends mold \

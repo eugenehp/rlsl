@@ -62,7 +62,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     let start = Instant::now();
-    let mut pushed = 0u64;
     let mut pulled = 0u64;
 
     // Push thread
@@ -97,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     outlet_handle.join().unwrap();
 
     // ── Report ──
-    pushed = n_samples;
+    let pushed = n_samples;
     latencies.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let mean_latency = latencies.iter().sum::<f64>() / latencies.len().max(1) as f64;

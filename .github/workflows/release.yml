@@ -15,9 +15,6 @@ jobs:
   # ── Build native binaries ─────────────────────────────────────────
   build:
     name: Build (${{ matrix.name }})
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     strategy:
       fail-fast: false
       matrix:
@@ -54,7 +51,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: Swatinem/rust-cache@v2
 
       # mold linker on Linux
       - name: Install mold

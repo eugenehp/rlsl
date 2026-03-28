@@ -3,7 +3,7 @@
 //! Implements the XDF 1.0 specification:
 //! <https://github.com/sccn/xdf/wiki/Specifications>
 //!
-//! Chunk layout:  [NumLengthBytes] [Length] [Tag(u16)] [Content…]
+//! Chunk layout:  `[NumLengthBytes] [Length] [Tag(u16)] [Content…]`
 
 use std::fs::File;
 use std::io::{BufWriter, Write};

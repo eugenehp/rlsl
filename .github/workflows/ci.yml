@@ -16,15 +16,12 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: Swatinem/rust-cache@v2
       - name: Install mold
         run: sudo apt-get update && sudo apt-get install -y mold
       - name: Check formatting
@@ -49,9 +46,6 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     needs: lint
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     strategy:
       fail-fast: false
       matrix:
@@ -68,9 +62,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: Swatinem/rust-cache@v2
 
-      # mold is Linux-only; macOS/Windows use default linkers
+      # mold is Linux-only
       - name: Install mold
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y mold
@@ -126,13 +120,10 @@ jobs:
     name: Benchmarks
     needs: lint
     runs-on: ubuntu-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: Swatinem/rust-cache@v2
       - name: Install mold
         run: sudo apt-get update && sudo apt-get install -y mold
       - name: Check benchmarks compile
@@ -143,13 +134,10 @@ jobs:
     name: Rustdoc
     needs: lint
     runs-on: ubuntu-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: Swatinem/rust-cache@v2
       - name: Install mold
         run: sudo apt-get update && sudo apt-get install -y mold
       - name: Build docs
@@ -162,15 +150,12 @@ jobs:
     name: WASM build
     needs: lint
     runs-on: ubuntu-latest
-    env:
-      SCCACHE_GHA_ENABLED: "true"
-      RUSTC_WRAPPER: "sccache"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: mozilla-actions/sccache-action@v0.0.7
+      - uses: Swatinem/rust-cache@v2
       - name: Remove mold config (WASM uses lld)
         run: rm -f .cargo/config.toml
       - name: Install wasm-pack
@@ -207,8 +192,6 @@ jobs:
         with:
           command: build
           args: --release -m crates/lsl-py/Cargo.toml --out dist
-        env:
-          RUSTC_WRAPPER: ""
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:

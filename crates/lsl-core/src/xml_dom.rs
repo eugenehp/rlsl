@@ -1,5 +1,5 @@
 //! Mutable XML DOM for stream descriptions.
-//! Provides a pugixml-compatible tree structure used by StreamInfo's <desc> element.
+//! Provides a pugixml-compatible tree structure used by StreamInfo's `<desc>` element.
 
 use parking_lot::Mutex;
 use std::sync::Arc;
