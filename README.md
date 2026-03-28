@@ -157,22 +157,6 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting.
 **Note:** LSL is designed for local network use. It does not provide authentication
 or encryption. Do not expose LSL streams to untrusted networks.
 
-## Status
-
-See [PLAN.md](PLAN.md) for milestone tracking. All 11 milestones are complete:
-
-- ✅ Full protocol 1.00 + 1.10 support
-- ✅ 162/162 C ABI symbols (drop-in for liblsl)
-- ✅ UDP multicast/broadcast discovery (IPv4 + IPv6)
-- ✅ NTP-like time correction
-- ✅ Timestamp post-processing (dejitter, clocksync, monotonize)
-- ✅ Stream recovery on connection loss
-- ✅ Config file loading (`lsl_api.cfg`)
-- ✅ Python bindings with numpy support
-- ✅ WASM browser client + WebSocket bridge
-- ✅ Recording to XDF / Parquet / HDF5
-- ✅ CI/CD with cross-platform builds, PyPI, npm, Docker
-
 ## License
 
 MIT
