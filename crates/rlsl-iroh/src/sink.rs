@@ -177,14 +177,9 @@ async fn read_stream_header(recv: &mut RecvStream) -> Result<(StreamInfo, Compre
 // ── Datagram (lossy) path ────────────────────────────────────────────
 
 async fn handle_datagrams(conn: Connection) {
-    loop {
-        match conn.read_datagram().await {
-            Ok(bytes) => {
-                log::trace!("Received datagram ({} bytes)", bytes.len());
-                let _ = bytes;
-            }
-            Err(_) => break,
-        }
+    while let Ok(bytes) = conn.read_datagram().await {
+        log::trace!("Received datagram ({} bytes)", bytes.len());
+        let _ = bytes;
     }
 }
 

@@ -7,6 +7,7 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
     "RUSTSEC-2025-0057",  # fxhash — unmaintained but stable
     "RUSTSEC-2024-0436",  # paste — unmaintained but stable
+    "RUSTSEC-2023-0089",  # atomic-polyfill — unmaintained, transitive dep from iroh
 ]
 
 [licenses]
@@ -25,6 +26,9 @@ allow = [
     "GPL-3.0-only",
     "OFL-1.1",
     "Ubuntu-font-1.0",
+    "Unlicense",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 

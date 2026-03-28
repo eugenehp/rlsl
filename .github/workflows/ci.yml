@@ -31,7 +31,7 @@ jobs:
       - name: Clippy (workspace, exclude rlsl-py/rlsl-wasm)
         run: >
           cargo clippy
-          -p rlsl -p rlsl-sys -p exg -p rlsl-rec -p rlsl-rec-gui -p rlsl-cli
+          -p rlsl -p rlsl-sys -p exg -p rlsl-rec -p rlsl-rec-gui -p rlsl-cli -p rlsl-iroh
           -- -D warnings
 
   # ── Dependency audit ──────────────────────────────────────────────
