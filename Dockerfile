@@ -45,4 +45,4 @@ CMD ["list"]
 LABEL org.opencontainers.image.title="lsl-rs"
 LABEL org.opencontainers.image.description="Lab Streaming Layer (Rust) — recorder, generator, bridge"
 LABEL org.opencontainers.image.source="https://github.com/eugenehp/lsl-rs"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="GPL-3.0-only"

@@ -1,7 +1,7 @@
 # lsl-rs
 
 [![CI](https://github.com/eugenehp/lsl-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/eugenehp/lsl-rs/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
 Rust rewrite of the [Lab Streaming Layer](https://github.com/sccn/liblsl) (liblsl) core library.
 
@@ -159,4 +159,4 @@ or encryption. Do not expose LSL streams to untrusted networks.
 
 ## License
 
-MIT
+GPLv3 — see [LICENSE](LICENSE)
