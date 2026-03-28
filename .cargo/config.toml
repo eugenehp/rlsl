@@ -1,0 +1,12 @@
+# ── Linker: use mold on Linux for faster linking ─────────────────────
+# Install: sudo apt install mold (Ubuntu) / brew install mold (macOS-linux)
+# On macOS native, the default ld is already fast; mold is Linux-only.
+# On Windows, lld is used automatically by rustc.
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

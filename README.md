@@ -31,6 +31,20 @@ lsl-rs/
 
 ## Quick Start
 
+### Prerequisites (optional, for faster builds)
+
+```sh
+# Install mold linker (Linux — 5-10x faster linking)
+sudo apt install mold        # Ubuntu/Debian
+brew install mold             # macOS (linuxbrew)
+
+# Install sccache (shared compilation cache)
+cargo install sccache
+```
+
+The project auto-detects mold via `.cargo/config.toml` on Linux targets.
+sccache is configured as `rustc-wrapper` in CI via environment variables.
+
 ```sh
 # Build everything
 cargo build

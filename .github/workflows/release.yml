@@ -10,6 +10,8 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   # ── Build native binaries ─────────────────────────────────────────
@@ -51,7 +53,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: mozilla-actions/sccache-action@v0.0.7
+
+      # mold linker on Linux
+      - name: Install mold
+        if: runner.os == 'Linux' && !matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y mold
+
+      # Remove mold config on non-Linux
+      - name: Remove mold config (non-Linux)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: rm -f .cargo/config.toml
 
       # Cross-compilation for Linux aarch64
       - name: Install cross
