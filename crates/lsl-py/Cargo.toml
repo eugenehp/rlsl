@@ -1,9 +1,9 @@
 [package]
 name = "lsl-py"
 description = "Python bindings for lsl-core — Lab Streaming Layer in pure Rust"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.0.1"
+edition = "2021"
+license = "GPL-3.0-only"
 publish = false  # published to PyPI, not crates.io
 
 [lib]
@@ -11,7 +11,7 @@ name = "pylsl"
 crate-type = ["cdylib"]
 
 [dependencies]
-lsl-core.workspace = true
+lsl-core = { path = "../lsl-core" }
 pyo3 = { version = "0.24", features = ["extension-module"] }
 numpy = "0.24"
 ndarray = "0.16"

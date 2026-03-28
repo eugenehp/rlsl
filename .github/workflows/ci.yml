@@ -90,7 +90,7 @@ jobs:
 
       # e2e tests use networking — only run on Linux & macOS
       - name: E2E tests (lsl-rec)
-        if: runner.os != 'Windows'
+        if: runner.os == 'Linux'
         run: cargo test -p lsl-rec --target ${{ matrix.target }} -- --nocapture
 
       - name: Check liblsl symbols

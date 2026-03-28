@@ -1,5 +1,6 @@
 //! `lsl` — Unified CLI tool for Lab Streaming Layer.
 //!
+//! ```text
 //! Usage:
 //!   lsl list    [--timeout SECS] [--query QUERY] [--json]
 //!   lsl gen     [--name N] [--type T] [--channels N] [--srate HZ] [--waveform W]
@@ -9,6 +10,7 @@
 //!   lsl info    <file>
 //!   lsl version
 //!   lsl help    [command]
+//! ```
 
 use anyhow::Result;
 use lsl_core::prelude::*;

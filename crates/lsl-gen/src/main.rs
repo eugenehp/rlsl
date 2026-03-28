@@ -1,5 +1,6 @@
 //! `lsl-gen` — Synthetic LSL signal generator.
 //!
+//! ```text
 //! Usage:
 //!   lsl-gen [OPTIONS]
 //!
@@ -11,6 +12,7 @@
 //!   --waveform WAVE    sine|square|noise|chirp|counter|sawtooth (default: sine)
 //!   --freq HZ          Waveform frequency (default: 10.0)
 //!   --amplitude A      Waveform amplitude (default: 100.0)
+//! ```
 
 use lsl_core::prelude::*;
 use std::time::Duration;
