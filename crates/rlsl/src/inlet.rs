@@ -441,6 +441,51 @@ impl StreamInlet {
             crate::postproc::TimestampPostProcessor::new(flags, srate, halftime);
     }
 
+    /// Pull all available samples (up to `max_samples`) into a flat buffer.
+    ///
+    /// Returns `(timestamps, data)` where `data` is a flat vec of
+    /// `n_samples × n_channels` f64 values in row-major order, and
+    /// `timestamps` has one entry per sample.
+    ///
+    /// If no samples are available, returns empty vecs (never blocks when
+    /// `timeout == 0.0`).
+    pub fn pull_chunk_d(
+        &self,
+        max_samples: usize,
+        timeout: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), String> {
+        let n_ch = self.info.channel_count() as usize;
+        let mut timestamps = Vec::with_capacity(max_samples);
+        let mut data = Vec::with_capacity(max_samples * n_ch);
+        let mut buf = vec![0.0f64; n_ch];
+
+        // First sample: may block up to `timeout`
+        let first = self.pull_sample_raw(timeout)?;
+        if let Some(s) = first {
+            s.retrieve_f64(&mut buf);
+            self.samples_available.fetch_sub(1, Ordering::Relaxed);
+            timestamps.push(self.postprocess_timestamp(s.timestamp));
+            data.extend_from_slice(&buf);
+        } else {
+            return Ok((timestamps, data));
+        }
+
+        // Drain remaining available samples without blocking
+        for _ in 1..max_samples {
+            match self.pull_sample_raw(0.0)? {
+                Some(s) => {
+                    s.retrieve_f64(&mut buf);
+                    self.samples_available.fetch_sub(1, Ordering::Relaxed);
+                    timestamps.push(self.postprocess_timestamp(s.timestamp));
+                    data.extend_from_slice(&buf);
+                }
+                None => break,
+            }
+        }
+
+        Ok((timestamps, data))
+    }
+
     pub fn samples_available(&self) -> u32 {
         self.sample_rx.len() as u32
     }
