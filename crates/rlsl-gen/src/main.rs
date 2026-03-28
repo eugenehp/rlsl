@@ -36,7 +36,14 @@ fn main() -> anyhow::Result<()> {
     let freq: f64 = get("--freq", "10.0").parse()?;
     let amplitude: f64 = get("--amplitude", "100.0").parse()?;
 
-    let info = StreamInfo::new(&name, &type_, nch, srate, ChannelFormat::Float32, "rlsl-gen");
+    let info = StreamInfo::new(
+        &name,
+        &type_,
+        nch,
+        srate,
+        ChannelFormat::Float32,
+        "rlsl-gen",
+    );
     let outlet = StreamOutlet::new(&info, 0, 360);
 
     eprintln!("🎵 rlsl-gen streaming:");

@@ -1,15 +1,12 @@
 # cargo-deny configuration
 # Run with: cargo deny check
-# Install: cargo install cargo-deny
 
 [advisories]
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 ignore = [
-    # fxhash — unmaintained but stable, no security issues
-    "RUSTSEC-2025-0057",
-    # paste — unmaintained but stable, no security issues
-    "RUSTSEC-2024-0436",
+    "RUSTSEC-2025-0057",  # fxhash — unmaintained but stable
+    "RUSTSEC-2024-0436",  # paste — unmaintained but stable
 ]
 
 [licenses]

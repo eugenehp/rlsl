@@ -301,10 +301,7 @@ fn cmd_bench(args: &[String]) -> Result<()> {
 
 fn cmd_version() -> Result<()> {
     println!("lsl {} (lsl-rs)", env!("CARGO_PKG_VERSION"));
-    println!(
-        "Protocol version: {}",
-        rlsl::types::LSL_PROTOCOL_VERSION
-    );
+    println!("Protocol version: {}", rlsl::types::LSL_PROTOCOL_VERSION);
     println!("Library version:  {}", rlsl::types::LSL_LIBRARY_VERSION);
     Ok(())
 }

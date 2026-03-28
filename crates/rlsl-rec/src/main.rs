@@ -11,13 +11,13 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use futures::StreamExt;
+use ratatui::prelude::*;
+use ratatui::widgets::*;
 use rlsl::clock::local_clock;
 use rlsl::resolver;
 use rlsl::stream_info::StreamInfo;
 use rlsl_rec::markers::MarkerOutlet;
 use rlsl_rec::recording::{Recording, RecordingFormat};
-use ratatui::prelude::*;
-use ratatui::widgets::*;
 use std::io::stdout;
 use std::time::Duration;
 use tokio::sync::oneshot;
