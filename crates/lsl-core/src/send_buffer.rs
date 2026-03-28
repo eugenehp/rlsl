@@ -31,9 +31,8 @@ impl SendBuffer {
         let mut consumers = self.consumers.lock();
         consumers.retain(|c| {
             // Drop oldest if over capacity
-            while c.sender.len() > c.max_buffered {
+            if c.sender.len() > c.max_buffered {
                 let _ = c.sender.try_send(None); // won't help, but we can't recv here
-                break;
             }
             c.sender.send(Some(sample.clone())).is_ok()
         });
@@ -65,7 +64,7 @@ impl SendBuffer {
     pub fn have_consumers(&self) -> bool {
         // clean up dead senders while checking
         let mut consumers = self.consumers.lock();
-        consumers.retain(|c| !c.sender.is_empty() || c.sender.len() == 0);
+        consumers.retain(|c| !c.sender.is_empty() || c.sender.is_empty());
         let has = !consumers.is_empty();
         self.has_consumers.store(has, Ordering::Relaxed);
         has

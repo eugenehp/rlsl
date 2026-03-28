@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 //! Recording engine — resolves LSL streams, pulls data, writes XDF or Parquet.
 //!
 //! All heavy operations are spawned as tokio tasks (blocking I/O via
@@ -178,11 +179,9 @@ impl Recording {
             .unwrap_or_else(|_| lsl_core::RUNTIME.handle().clone());
 
         let mut tasks: Vec<JoinHandle<()>> = Vec::new();
-        let mut stream_id: u32 = 0;
 
-        for info in streams {
-            stream_id += 1;
-            let sid = stream_id;
+        for (idx, info) in streams.iter().enumerate() {
+            let sid = (idx + 1) as u32;
             let info = info.clone();
             let writer = writer.clone();
             let shutdown = shutdown.clone();
@@ -457,12 +456,12 @@ where
 
     // Deduce timestamps for XDF (zero out deducible ones)
     let sample_interval = if srate > 0.0 { 1.0 / srate } else { 0.0 };
-    for i in 1..n_pulled {
-        if sample_interval > 0.0 && (*last_ts + sample_interval - timestamps[i]).abs() < 1e-9 {
-            timestamps[i] = 0.0;
+    for ts in timestamps[1..n_pulled].iter_mut() {
+        if sample_interval > 0.0 && (*last_ts + sample_interval - *ts).abs() < 1e-9 {
+            *ts = 0.0;
         }
-        if timestamps[i] != 0.0 {
-            *last_ts = timestamps[i];
+        if *ts != 0.0 {
+            *last_ts = *ts;
         } else {
             *last_ts += sample_interval;
         }
@@ -484,12 +483,12 @@ where
         Writer::Parquet(_) => {
             let mut parquet_ts = full_timestamps;
             let mut running_ts = parquet_ts[0];
-            for i in 1..parquet_ts.len() {
-                if parquet_ts[i] == 0.0 {
+            for ts in parquet_ts[1..].iter_mut() {
+                if *ts == 0.0 {
                     running_ts += sample_interval;
-                    parquet_ts[i] = running_ts;
+                    *ts = running_ts;
                 } else {
-                    running_ts = parquet_ts[i];
+                    running_ts = *ts;
                 }
             }
             writer.write_samples_numeric(

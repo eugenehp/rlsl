@@ -3,6 +3,11 @@
 //! Every `#[no_mangle] pub extern "C"` function in this crate is exported from
 //! the resulting `liblsl.{dylib,so,dll}`.
 #![allow(unused_variables)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::unnecessary_cast)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::redundant_pattern_matching)]
+#![allow(clippy::explicit_counter_loop)]
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_float, c_ulong, c_void};

@@ -71,25 +71,24 @@ async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<f6
                 .max(0.01),
         ));
 
-        match tokio::time::timeout(recv_timeout, socket.recv_from(&mut buf)).await {
-            Ok(Ok((len, _))) => {
-                let t3 = local_clock();
-                let reply = std::str::from_utf8(&buf[..len]).unwrap_or("").trim();
-                let parts: Vec<&str> = reply.split_whitespace().collect();
+        if let Ok(Ok((len, _))) =
+            tokio::time::timeout(recv_timeout, socket.recv_from(&mut buf)).await
+        {
+            let t3 = local_clock();
+            let reply = std::str::from_utf8(&buf[..len]).unwrap_or("").trim();
+            let parts: Vec<&str> = reply.split_whitespace().collect();
 
-                // Reply format: " <wave_id> <t0_echo> <t1> <t2>"
-                if parts.len() >= 4 {
-                    if let (Ok(t1), Ok(t2)) = (parts[2].parse::<f64>(), parts[3].parse::<f64>()) {
-                        let rtt = (t3 - t0) - (t2 - t1);
-                        let offset = ((t1 - t0) + (t2 - t3)) / 2.0;
+            // Reply format: " <wave_id> <t0_echo> <t1> <t2>"
+            if parts.len() >= 4 {
+                if let (Ok(t1), Ok(t2)) = (parts[2].parse::<f64>(), parts[3].parse::<f64>()) {
+                    let rtt = (t3 - t0) - (t2 - t1);
+                    let offset = ((t1 - t0) + (t2 - t3)) / 2.0;
 
-                        if rtt >= 0.0 && rtt <= max_rtt {
-                            results.push((rtt, offset));
-                        }
+                    if rtt >= 0.0 && rtt <= max_rtt {
+                        results.push((rtt, offset));
                     }
                 }
             }
-            _ => {} // timeout, try next probe
         }
 
         if wave_id + 1 < n_probes {

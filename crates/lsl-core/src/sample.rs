@@ -484,9 +484,8 @@ impl Sample {
     }
 
     pub fn assign_strings(&mut self, src: &[String]) {
-        match &mut self.data {
-            SampleData::StringData(d) => d.clone_from_slice(src),
-            _ => {}
+        if let SampleData::StringData(d) = &mut self.data {
+            d.clone_from_slice(src);
         }
     }
 
@@ -829,48 +828,47 @@ impl Sample {
     pub fn assign_test_pattern(&mut self, offset: i32) {
         self.timestamp = 123456.789;
         self.pushthrough = true;
-        let n = self.num_channels();
         match &mut self.data {
             SampleData::Float32(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = (k as i32 + offset) as f32;
-                    d[k] = if k % 2 == 0 { val } else { -val };
+                    *v = if k % 2 == 0 { val } else { -val };
                 }
             }
             SampleData::Double64(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = (k as i64 + offset as i64 + 16777217) as f64;
-                    d[k] = if k % 2 == 0 { val } else { -val };
+                    *v = if k % 2 == 0 { val } else { -val };
                 }
             }
             SampleData::Int32(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = (k as i32 + offset + 65537) % i32::MAX;
-                    d[k] = if k % 2 == 0 { val } else { -val };
+                    *v = if k % 2 == 0 { val } else { -val };
                 }
             }
             SampleData::Int16(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = ((k as i32 + offset + 257) % i16::MAX as i32) as i16;
-                    d[k] = if k % 2 == 0 { val } else { -val };
+                    *v = if k % 2 == 0 { val } else { -val };
                 }
             }
             SampleData::Int8(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = ((k as i32 + offset + 1) % i8::MAX as i32) as i8;
-                    d[k] = if k % 2 == 0 { val } else { -val };
+                    *v = if k % 2 == 0 { val } else { -val };
                 }
             }
             SampleData::Int64(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = k as i64 + 2147483649i64 + offset as i64;
-                    d[k] = if k % 2 == 0 { val } else { -val };
+                    *v = if k % 2 == 0 { val } else { -val };
                 }
             }
             SampleData::StringData(d) => {
-                for k in 0..n {
+                for (k, v) in d.iter_mut().enumerate() {
                     let val = (k as i32 + 10) * if k % 2 == 0 { 1 } else { -1 };
-                    d[k] = val.to_string();
+                    *v = val.to_string();
                 }
             }
         }

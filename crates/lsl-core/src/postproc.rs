@@ -12,7 +12,7 @@ pub struct TimestampPostProcessor {
     flags: u32,
     clock_offset: f64,
     // Dejitter state
-    smoothing_halftime: f64,
+    _smoothing_halftime: f64,
     srate: f64,
     samples_seen: u64,
     expected_next: f64,
@@ -33,7 +33,7 @@ impl TimestampPostProcessor {
         TimestampPostProcessor {
             flags,
             clock_offset: 0.0,
-            smoothing_halftime: smoothing_halftime as f64,
+            _smoothing_halftime: smoothing_halftime as f64,
             srate,
             samples_seen: 0,
             expected_next: 0.0,
@@ -73,10 +73,8 @@ impl TimestampPostProcessor {
         }
 
         // 3. Monotonize: ensure strictly increasing
-        if self.flags & PROC_MONOTONIZE != 0 {
-            if t <= self.last_output {
-                t = self.last_output + 1e-12; // tiny epsilon
-            }
+        if self.flags & PROC_MONOTONIZE != 0 && t <= self.last_output {
+            t = self.last_output + 1e-12; // tiny epsilon
         }
 
         self.last_output = t;

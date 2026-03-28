@@ -122,13 +122,11 @@ fn load_config_file() -> HashMap<String, String> {
         Some(std::path::PathBuf::from("/etc/lsl_api/lsl_api.cfg")),
     ];
 
-    for candidate in &candidates {
-        if let Some(path) = candidate {
-            if path.exists() {
-                if let Ok(contents) = std::fs::read_to_string(path) {
-                    log::info!("Loaded LSL config from {}", path.display());
-                    return parse_ini(&contents);
-                }
+    for candidate in candidates.iter().flatten() {
+        if candidate.exists() {
+            if let Ok(contents) = std::fs::read_to_string(candidate) {
+                log::info!("Loaded LSL config from {}", candidate.display());
+                return parse_ini(&contents);
             }
         }
     }

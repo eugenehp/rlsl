@@ -265,7 +265,7 @@ impl StreamInfo {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.0);
         let channel_format = extract_tag(xml, "channel_format")
-            .map(|s| ChannelFormat::from_str(&s))
+            .map(|s| ChannelFormat::from_name(&s))
             .unwrap_or(ChannelFormat::Undefined);
         let source_id = extract_tag(xml, "source_id").unwrap_or_default();
         let version = extract_tag(xml, "version")

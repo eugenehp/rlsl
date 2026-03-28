@@ -55,7 +55,7 @@ struct LiveViewer {
     nch: usize,
     ring: Vec<VecDeque<f64>>, // ring buffer per channel
     quality: SignalQuality,
-    ring_len: usize,
+    _ring_len: usize,
 }
 
 impl LiveViewer {
@@ -74,7 +74,7 @@ impl LiveViewer {
                 .map(|_| VecDeque::from(vec![0.0; ring_len]))
                 .collect(),
             quality: SignalQuality::new(info.nominal_srate(), nch),
-            ring_len,
+            _ring_len: ring_len,
         }
     }
 
@@ -435,8 +435,8 @@ impl RecorderApp {
     fn ui_viewer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Select stream to view:");
-            for (i, entry) in self.streams.iter().enumerate() {
-                if ui.selectable_label(false, &entry.info.name()).clicked() {
+            for entry in self.streams.iter() {
+                if ui.selectable_label(false, entry.info.name()).clicked() {
                     self.viewer = Some(LiveViewer::new(&entry.info));
                 }
             }
@@ -505,7 +505,7 @@ impl RecorderApp {
             ui.label("Select stream:");
             for (i, entry) in self.streams.iter().enumerate() {
                 if ui
-                    .selectable_label(self.inspector_idx == Some(i), &entry.info.name())
+                    .selectable_label(self.inspector_idx == Some(i), entry.info.name())
                     .clicked()
                 {
                     self.inspector_idx = Some(i);

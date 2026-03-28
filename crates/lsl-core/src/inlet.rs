@@ -38,7 +38,7 @@ impl StreamInlet {
 
         let srate = info.nominal_srate();
         let halftime = crate::config::CONFIG.smoothing_halftime;
-        let inlet = StreamInlet {
+        StreamInlet {
             info: info.clone(),
             max_buflen,
             max_chunklen,
@@ -53,9 +53,7 @@ impl StreamInlet {
             postproc: Mutex::new(crate::postproc::TimestampPostProcessor::new(
                 PROC_NONE, srate, halftime,
             )),
-        };
-
-        inlet
+        }
     }
 
     /// Open the data stream (connect to the outlet's TCP port).

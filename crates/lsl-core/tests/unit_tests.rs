@@ -72,7 +72,7 @@ mod types_tests {
             ("int64", ChannelFormat::Int64),
         ];
         for (s, expected) in &formats {
-            let fmt = ChannelFormat::from_str(s);
+            let fmt = ChannelFormat::from_name(s);
             assert_eq!(fmt, *expected, "from_str({}) failed", s);
             assert_eq!(fmt.as_str(), *s, "as_str() roundtrip failed for {}", s);
         }
@@ -80,7 +80,7 @@ mod types_tests {
 
     #[test]
     fn channel_format_unknown_str() {
-        assert_eq!(ChannelFormat::from_str("bogus"), ChannelFormat::Undefined);
+        assert_eq!(ChannelFormat::from_name("bogus"), ChannelFormat::Undefined);
         assert_eq!(ChannelFormat::from_i32(999), ChannelFormat::Undefined);
     }
 

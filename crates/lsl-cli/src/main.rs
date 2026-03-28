@@ -160,7 +160,7 @@ fn cmd_gen(args: &[String]) -> Result<()> {
     loop {
         let t = sample_idx as f64 / srate;
 
-        for ch in 0..nch as usize {
+        for (ch, s) in sample.iter_mut().enumerate() {
             let phase = 2.0 * std::f64::consts::PI * freq * t + ch as f64 * 0.5;
             let value = match waveform.as_str() {
                 "sine" => amplitude * phase.sin(),
@@ -176,7 +176,7 @@ fn cmd_gen(args: &[String]) -> Result<()> {
                 "counter" => (sample_idx * nch as u64 + ch as u64) as f64,
                 _ => amplitude * phase.sin(),
             };
-            sample[ch] = value as f32;
+            *s = value as f32;
         }
 
         outlet.push_sample_f(&sample, 0.0, true);
@@ -199,7 +199,7 @@ fn cmd_bench(args: &[String]) -> Result<()> {
     let srate: f64 = get_arg(args, "--srate", "1000").parse()?;
     let duration_secs: f64 = get_arg(args, "--duration", "5").parse()?;
     let format_str = get_arg(args, "--format", "float32");
-    let fmt = ChannelFormat::from_str(&format_str);
+    let fmt = ChannelFormat::from_name(&format_str);
     let n_samples = (srate * duration_secs) as u64;
 
     eprintln!(

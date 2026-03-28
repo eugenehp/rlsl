@@ -200,7 +200,7 @@ impl TcpServer {
             // Protocol 1.00 fallback - read two integers
             let mut params = String::new();
             reader.read_line(&mut params).await?;
-            let parts: Vec<&str> = params.trim().split_whitespace().collect();
+            let parts: Vec<&str> = params.split_whitespace().collect();
             if parts.len() >= 2 {
                 max_buffered = parts[0].parse().unwrap_or(360);
                 max_chunklen = parts[1].parse().unwrap_or(0);
@@ -257,7 +257,7 @@ impl TcpServer {
                     chunk_count += 1;
 
                     if sample.pushthrough || chunk_count >= effective_chunk {
-                        if let Err(_) = reader.get_mut().write_all(&chunk_buf).await {
+                        if reader.get_mut().write_all(&chunk_buf).await.is_err() {
                             break;
                         }
                         chunk_buf.clear();
@@ -268,7 +268,7 @@ impl TcpServer {
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     // Flush any pending data
                     if !chunk_buf.is_empty() {
-                        if let Err(_) = reader.get_mut().write_all(&chunk_buf).await {
+                        if reader.get_mut().write_all(&chunk_buf).await.is_err() {
                             break;
                         }
                         chunk_buf.clear();

@@ -46,7 +46,7 @@ impl ChannelFormat {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "float32" => Self::Float32,
             "double64" => Self::Double64,

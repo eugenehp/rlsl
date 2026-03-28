@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     let duration_secs: f64 = get("--duration", "5").parse()?;
     let format_str = get("--format", "float32");
 
-    let fmt = ChannelFormat::from_str(&format_str);
+    let fmt = ChannelFormat::from_name(&format_str);
     let n_samples = (srate * duration_secs) as u64;
 
     eprintln!(
