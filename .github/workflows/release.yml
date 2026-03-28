@@ -128,8 +128,8 @@ jobs:
 
           # Shared library (liblsl)
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp target/${{ matrix.target }}/release/rlsl.dll "$DIR/" 2>/dev/null || true
-            cp target/${{ matrix.target }}/release/rlsl.dll.lib "$DIR/" 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/lsl.dll "$DIR/" 2>/dev/null || true
+            cp target/${{ matrix.target }}/release/lsl.dll.lib "$DIR/" 2>/dev/null || true
           else
             cp target/${{ matrix.target }}/release/liblsl${{ matrix.lib_ext }} "$DIR/" 2>/dev/null || true
           fi
@@ -264,7 +264,7 @@ jobs:
             | macOS aarch64 | `rlsl-${{ github.ref_name }}-macos-aarch64.tar.gz` |
             | Windows x86_64 | `rlsl-${{ github.ref_name }}-windows-x86_64.zip` |
 
-            Each archive contains: `rlsl` (CLI), `rlsl-rec`, `rlsl-rec-gui`, `rlsl-bridge`, `librlsl.{dylib,so,dll}`
+            Each archive contains: `rlsl` (CLI), `rlsl-rec`, `rlsl-rec-gui`, `rlsl-bridge`, `liblsl.{dylib,so,dll}`
 
             ### Python wheels (`pip install pylsl`)
             Pre-built for Python 3.9–3.13 on Linux/macOS/Windows.

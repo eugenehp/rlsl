@@ -7,7 +7,7 @@ license.workspace = true
 publish = false  # cdylib distributed as pre-built binaries, not a Rust dependency
 
 [lib]
-name = "rlsl"                    # produces liblsl.dylib / liblsl.so / lsl.dll
+name = "lsl"                     # produces liblsl.dylib / liblsl.so / lsl.dll (C ABI compat)
 crate-type = ["cdylib"]
 
 [dependencies]

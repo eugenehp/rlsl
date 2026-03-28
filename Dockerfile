@@ -34,7 +34,7 @@ COPY --from=builder /build/target/release/rlsl-convert /usr/local/bin/rlsl-conve
 COPY --from=builder /build/target/release/rlsl-bridge /usr/local/bin/rlsl-bridge
 
 # Copy shared library
-COPY --from=builder /build/target/release/librlsl.so /usr/local/lib/librlsl.so
+COPY --from=builder /build/target/release/liblsl.so /usr/local/lib/liblsl.so
 RUN ldconfig
 
 # Data directory for recordings

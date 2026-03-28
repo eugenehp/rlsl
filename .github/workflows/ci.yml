@@ -117,9 +117,9 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            nm -gU target/${{ matrix.target }}/debug/librlsl.dylib | grep ' T _lsl_' | wc -l
+            nm -gU target/${{ matrix.target }}/debug/liblsl.dylib | grep ' T _lsl_' | wc -l
           elif [ "$RUNNER_OS" = "Linux" ]; then
-            nm -D target/${{ matrix.target }}/debug/librlsl.so | grep ' T lsl_' | wc -l
+            nm -D target/${{ matrix.target }}/debug/liblsl.so | grep ' T lsl_' | wc -l
           else
             echo "(symbol check skipped on Windows)"
           fi
