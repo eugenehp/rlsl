@@ -317,7 +317,18 @@ jobs:
           registry-url: "https://registry.npmjs.org"
       - name: Build WASM
         working-directory: crates/rlsl-wasm
-        run: wasm-pack build --release --target web --features wasm --no-default-features --scope rlsl
+        run: wasm-pack build --release --target web --features wasm --no-default-features
+      - name: Set npm package scope
+        working-directory: crates/rlsl-wasm/pkg
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            pkg.name = '@rlsl/rlsl-wasm';
+            pkg.keywords = ['lsl', 'lab-streaming-layer', 'wasm', 'websocket', 'eeg', 'neuroscience'];
+            pkg.homepage = 'https://github.com/eugenehp/rlsl';
+            fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2));
+          "
       - name: Publish to npm
         working-directory: crates/rlsl-wasm/pkg
         run: npm publish --access public

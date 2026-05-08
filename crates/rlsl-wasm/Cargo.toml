@@ -4,6 +4,7 @@ description = "LSL WebSocket bridge — streams LSL data to browsers via WebSock
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false  # published to npm, not crates.io
 
 [lib]

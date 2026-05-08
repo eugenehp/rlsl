@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rlsl-py"
+description = "Python bindings for rlsl — Lab Streaming Layer in pure Rust"
+version = "0.0.5"
+license = { text = "GPL-3.0-only" }
+requires-python = ">=3.9"
+keywords = ["lsl", "lab-streaming-layer", "eeg", "biosignal", "neuroscience"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Libraries",
+]
+
+[tool.maturin]
+module-name = "pylsl"
+features = ["pyo3/extension-module"]

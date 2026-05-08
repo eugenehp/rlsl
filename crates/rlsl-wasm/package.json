@@ -1,0 +1,10 @@
+{
+  "name": "@rlsl/rlsl-wasm",
+  "description": "LSL WebSocket bridge — streams LSL data to browsers via WebSocket + WASM client",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eugenehp/rlsl"
+  },
+  "keywords": ["lsl", "lab-streaming-layer", "wasm", "websocket", "eeg", "neuroscience"],
+  "homepage": "https://github.com/eugenehp/rlsl"
+}
