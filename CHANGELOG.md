@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6] — 2026-10-26
+
+### Security
+- `rlsl-iroh`: bump `zstd` 0.13 → 0.14 (RUSTSEC-2026-0391, plus `zstd-safe` 7.x advisories
+  RUSTSEC-2026-0395..0406)
+- `rlsl-rec`, `rlsl-convert`: bump `arrow` / `parquet` 54 → 60 to drop the transitive `zstd` 0.13
+- Refresh transitive deps for `rustls`, `rustls-webpki`, `webpki-roots`, `webpki-root-certs`,
+  `h2`, `quick-xml`, `crossbeam-epoch`, `ctutils`, `webbrowser` advisories
+- `deny.toml`: ignore RUSTSEC-2026-0192 (`ttf-parser` unmaintained, via egui); drop stale
+  RUSTSEC-2023-0089 ignore
+
+### Changed
+- Use `as_chunks` / `slice::fill` to satisfy clippy 1.99 lints
+
 ## [0.0.3] — 2026-03-28
 
 ### Added

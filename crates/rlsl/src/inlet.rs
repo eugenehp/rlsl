@@ -553,8 +553,10 @@ async fn read_sample_async(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Float32(
-                raw.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -565,8 +567,10 @@ async fn read_sample_async(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Double64(
-                raw.chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| f64::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -577,8 +581,10 @@ async fn read_sample_async(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Int32(
-                raw.chunks_exact(4)
-                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| i32::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -589,8 +595,10 @@ async fn read_sample_async(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Int16(
-                raw.chunks_exact(2)
-                    .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| i16::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -609,8 +617,10 @@ async fn read_sample_async(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Int64(
-                raw.chunks_exact(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -683,8 +693,10 @@ async fn read_sample_async_100(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Float32(
-                raw.chunks_exact(4)
-                    .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| f32::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -695,8 +707,10 @@ async fn read_sample_async_100(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Double64(
-                raw.chunks_exact(8)
-                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| f64::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -707,8 +721,10 @@ async fn read_sample_async_100(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Int32(
-                raw.chunks_exact(4)
-                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|c| i32::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -719,8 +735,10 @@ async fn read_sample_async_100(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Int16(
-                raw.chunks_exact(2)
-                    .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| i16::from_le_bytes(*c))
                     .collect(),
             )
         }
@@ -739,8 +757,10 @@ async fn read_sample_async_100(
                 .await
                 .map_err(|e| e.to_string())?;
             SampleData::Int64(
-                raw.chunks_exact(8)
-                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                raw.as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|c| i64::from_le_bytes(*c))
                     .collect(),
             )
         }

@@ -158,12 +158,8 @@ impl SignalQuality {
         self.last_ts = 0.0;
         self.total_samples = 0;
         self.total_dropouts = 0;
-        for v in &mut self.ch_sum {
-            *v = 0.0;
-        }
-        for v in &mut self.ch_sum2 {
-            *v = 0.0;
-        }
+        self.ch_sum.fill(0.0);
+        self.ch_sum2.fill(0.0);
         self.ch_count = 0;
     }
 }

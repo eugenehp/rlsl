@@ -14,6 +14,6 @@ path = "src/main.rs"
 anyhow.workspace = true
 serde.workspace = true
 serde_json = "1.0"
-arrow = { version = "54", features = ["prettyprint", "csv"] }
-parquet = { version = "54", features = ["arrow", "zstd"] }
+arrow = { version = "60", features = ["prettyprint", "csv"] }
+parquet = { version = "60", features = ["arrow", "zstd"] }
 exg.workspace = true

@@ -633,8 +633,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 4];
                 reader.read_exact(&mut raw)?;
                 SampleData::Float32(
-                    raw.chunks_exact(4)
-                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| f32::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -642,8 +644,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 8];
                 reader.read_exact(&mut raw)?;
                 SampleData::Double64(
-                    raw.chunks_exact(8)
-                        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| f64::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -651,8 +655,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 4];
                 reader.read_exact(&mut raw)?;
                 SampleData::Int32(
-                    raw.chunks_exact(4)
-                        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| i32::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -660,8 +666,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 2];
                 reader.read_exact(&mut raw)?;
                 SampleData::Int16(
-                    raw.chunks_exact(2)
-                        .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| i16::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -674,8 +682,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 8];
                 reader.read_exact(&mut raw)?;
                 SampleData::Int64(
-                    raw.chunks_exact(8)
-                        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| i64::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -757,8 +767,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 4];
                 reader.read_exact(&mut raw)?;
                 SampleData::Float32(
-                    raw.chunks_exact(4)
-                        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| f32::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -766,8 +778,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 8];
                 reader.read_exact(&mut raw)?;
                 SampleData::Double64(
-                    raw.chunks_exact(8)
-                        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| f64::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -775,8 +789,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 4];
                 reader.read_exact(&mut raw)?;
                 SampleData::Int32(
-                    raw.chunks_exact(4)
-                        .map(|c| i32::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|c| i32::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -784,8 +800,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 2];
                 reader.read_exact(&mut raw)?;
                 SampleData::Int16(
-                    raw.chunks_exact(2)
-                        .map(|c| i16::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| i16::from_le_bytes(*c))
                         .collect(),
                 )
             }
@@ -798,8 +816,10 @@ impl Sample {
                 let mut raw = vec![0u8; n * 8];
                 reader.read_exact(&mut raw)?;
                 SampleData::Int64(
-                    raw.chunks_exact(8)
-                        .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    raw.as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|c| i64::from_le_bytes(*c))
                         .collect(),
                 )
             }
