@@ -327,10 +327,105 @@ pub fn xml_escape(s: &str) -> String {
     out
 }
 
+/// Decode the predefined entities and numeric character references in one pass (so
+/// `&amp;lt;` stays the text `&lt;`); anything else is kept as written.
 pub fn xml_unescape(s: &str) -> String {
-    s.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(k) = rest.find('&') {
+        out.push_str(&rest[..k]);
+        rest = &rest[k..];
+        let decoded = rest.find(';').filter(|&e| e <= 12).and_then(|e| {
+            let c = match &rest[1..e] {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                n if n.starts_with("#x") || n.starts_with("#X") => u32::from_str_radix(&n[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32),
+                n if n.starts_with('#') => n[1..].parse().ok().and_then(char::from_u32),
+                _ => None,
+            }?;
+            Some((c, e))
+        });
+        match decoded {
+            Some((c, e)) => {
+                out.push(c);
+                rest = &rest[e + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+impl XmlNode {
+    /// Parse an XML fragment (elements and text, as [`XmlNode::to_xml`] writes them and liblsl's
+    /// pugixml sends them, indented or not) and append its elements as children of this node.
+    /// Text directly inside an element becomes its value; attributes, comments and processing
+    /// instructions are skipped; parsing stops quietly at malformed input.
+    pub fn append_parsed(&self, xml: &str) {
+        let mut p = FragmentParser { s: xml, i: 0 };
+        p.content(self, None);
+    }
+}
+
+struct FragmentParser<'a> {
+    s: &'a str,
+    i: usize,
+}
+
+impl<'a> FragmentParser<'a> {
+    /// Children and text of `parent` up to `</end>` (or the end of the input).
+    fn content(&mut self, parent: &XmlNode, end: Option<&str>) {
+        let mut text = String::new();
+        let src = self.s;
+        while self.i < src.len() {
+            let r = &src[self.i..];
+            if let Some(after) = r.strip_prefix("</") {
+                let close = after.find('>').unwrap_or(after.len());
+                let name = after[..close].trim();
+                self.i += 2 + (close + 1).min(after.len());
+                if end.is_none_or(|e| e == name) {
+                    break;
+                }
+            } else if r.starts_with("<!--") {
+                self.i += r.find("-->").map_or(r.len(), |k| k + 3);
+            } else if let Some(cdata) = r.strip_prefix("<![CDATA[") {
+                let k = cdata.find("]]>").unwrap_or(cdata.len());
+                text.push_str(&cdata[..k]);
+                self.i += 9 + (k + 3).min(cdata.len());
+            } else if r.starts_with("<?") || r.starts_with("<!") {
+                self.i += r.find('>').map_or(r.len(), |k| k + 1);
+            } else if r.starts_with('<') {
+                let close = r.find('>').unwrap_or(r.len());
+                let tag = &r[1..close];
+                self.i += (close + 1).min(r.len());
+                let empty = tag.ends_with('/');
+                let tag = tag.trim_end_matches('/');
+                let name = tag.split_whitespace().next().unwrap_or("");
+                if name.is_empty() {
+                    continue;
+                }
+                let child = parent.append_child(name);
+                if !empty {
+                    self.content(&child, Some(name));
+                }
+            } else {
+                let k = r.find('<').unwrap_or(r.len());
+                text.push_str(&xml_unescape(&r[..k]));
+                self.i += k;
+            }
+        }
+        let t = text.trim();
+        if !t.is_empty() && end.is_some() {
+            parent.set_value(t);
+        }
+    }
 }

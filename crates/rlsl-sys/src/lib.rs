@@ -1295,7 +1295,7 @@ pub extern "C" fn lsl_pull_sample_v(
         return 0.0;
     }
     let inlet_ref = unsafe { &*inlet };
-    let info = inlet_ref.inlet.get_fullinfo(0.0);
+    let info = inlet_ref.inlet.info();
     let fmt = info.channel_format();
     let nch = info.channel_count() as usize;
     match fmt {
@@ -1346,7 +1346,7 @@ macro_rules! impl_pull_chunk {
                 return 0;
             }
             let inlet_ref = unsafe { &*inlet };
-            let nch = inlet_ref.inlet.get_fullinfo(0.0).channel_count() as usize;
+            let nch = inlet_ref.inlet.info().channel_count() as usize;
             if nch == 0 {
                 return 0;
             }
@@ -1407,7 +1407,7 @@ pub extern "C" fn lsl_pull_chunk_c(
         return 0;
     }
     let inlet_ref = unsafe { &*inlet };
-    let nch = inlet_ref.inlet.get_fullinfo(0.0).channel_count() as usize;
+    let nch = inlet_ref.inlet.info().channel_count() as usize;
     if nch == 0 {
         return 0;
     }
@@ -1456,7 +1456,7 @@ pub extern "C" fn lsl_pull_chunk_str(
         return 0;
     }
     let inlet_ref = unsafe { &*inlet };
-    let nch = inlet_ref.inlet.get_fullinfo(0.0).channel_count() as usize;
+    let nch = inlet_ref.inlet.info().channel_count() as usize;
     if nch == 0 {
         return 0;
     }
@@ -1505,7 +1505,7 @@ pub extern "C" fn lsl_pull_chunk_buf(
         return 0;
     }
     let inlet_ref = unsafe { &*inlet };
-    let nch = inlet_ref.inlet.get_fullinfo(0.0).channel_count() as usize;
+    let nch = inlet_ref.inlet.info().channel_count() as usize;
     if nch == 0 {
         return 0;
     }

@@ -114,8 +114,7 @@ impl TcpServer {
         } else if command == "LSL:fullinfo" {
             self.handle_fullinfo(&mut reader).await
         } else if command.starts_with("LSL:streamfeed") {
-            self.handle_streamfeed(&mut reader, &command, chunk_size)
-                .await
+            self.handle_streamfeed(reader, &command, chunk_size).await
         } else {
             Ok(())
         }
@@ -133,6 +132,52 @@ impl TcpServer {
         Ok(())
     }
 
+    /// Send the consumer's samples until it disconnects or the outlet shuts down.
+    fn feed(
+        mut stream: std::net::TcpStream,
+        consumer: crossbeam_channel::Receiver<Option<Sample>>,
+        shutdown: &AtomicBool,
+        data_protocol_version: i32,
+        effective_chunk: i32,
+    ) {
+        use std::io::Write;
+        let mut chunk_count = 0;
+        let mut chunk_buf = Vec::with_capacity(4096);
+        loop {
+            if shutdown.load(Ordering::Relaxed) {
+                break;
+            }
+            match consumer.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok(Some(sample)) => {
+                    if data_protocol_version >= 110 {
+                        sample.serialize_110(&mut chunk_buf);
+                    } else {
+                        sample.serialize_100(&mut chunk_buf);
+                    }
+                    chunk_count += 1;
+                    if sample.pushthrough || chunk_count >= effective_chunk {
+                        if stream.write_all(&chunk_buf).is_err() {
+                            break;
+                        }
+                        chunk_buf.clear();
+                        chunk_count = 0;
+                    }
+                }
+                Ok(None) => break, // sentinel
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if !chunk_buf.is_empty() {
+                        if stream.write_all(&chunk_buf).is_err() {
+                            break;
+                        }
+                        chunk_buf.clear();
+                        chunk_count = 0;
+                    }
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+
     async fn handle_fullinfo(&self, reader: &mut BufReader<TcpStream>) -> std::io::Result<()> {
         let msg = self.info.to_fullinfo_message();
         reader.get_mut().write_all(msg.as_bytes()).await?;
@@ -141,7 +186,7 @@ impl TcpServer {
 
     async fn handle_streamfeed(
         &self,
-        reader: &mut BufReader<TcpStream>,
+        mut reader: BufReader<TcpStream>,
         command: &str,
         chunk_size: i32,
     ) -> std::io::Result<()> {
@@ -238,47 +283,22 @@ impl TcpServer {
             i32::MAX
         };
 
-        // Stream samples
-        let mut chunk_count = 0;
-        let mut chunk_buf = Vec::with_capacity(4096);
-
-        loop {
-            if self.shutdown.load(Ordering::Relaxed) {
-                break;
-            }
-
-            match consumer.recv_timeout(std::time::Duration::from_millis(100)) {
-                Ok(Some(sample)) => {
-                    if data_protocol_version >= 110 {
-                        sample.serialize_110(&mut chunk_buf);
-                    } else {
-                        sample.serialize_100(&mut chunk_buf);
-                    }
-                    chunk_count += 1;
-
-                    if sample.pushthrough || chunk_count >= effective_chunk {
-                        if reader.get_mut().write_all(&chunk_buf).await.is_err() {
-                            break;
-                        }
-                        chunk_buf.clear();
-                        chunk_count = 0;
-                    }
-                }
-                Ok(None) => break, // sentinel
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    // Flush any pending data
-                    if !chunk_buf.is_empty() {
-                        if reader.get_mut().write_all(&chunk_buf).await.is_err() {
-                            break;
-                        }
-                        chunk_buf.clear();
-                        chunk_count = 0;
-                    }
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            }
-        }
-
+        // Waiting for samples blocks, so the feed runs on the blocking pool (one thread per
+        // consumer, like liblsl): on an async worker it would keep that worker from the other
+        // connections (`LSL:fullinfo` / `LSL:shortinfo` requests, further consumers).
+        let stream = reader.into_inner().into_std()?;
+        stream.set_nonblocking(false)?;
+        let shutdown = self.shutdown.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            Self::feed(
+                stream,
+                consumer,
+                &shutdown,
+                data_protocol_version,
+                effective_chunk,
+            )
+        })
+        .await;
         Ok(())
     }
 }

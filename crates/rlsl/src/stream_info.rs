@@ -254,6 +254,21 @@ impl StreamInfo {
         xml
     }
 
+    /// Parse a fullinfo XML message (an outlet's `LSL:fullinfo` reply): the header fields like
+    /// [`StreamInfo::from_shortinfo_message`] plus the `<desc>` contents.
+    pub fn from_fullinfo_message(xml: &str) -> Option<StreamInfo> {
+        // header fields come before <desc>; a description may reuse their tag names
+        let desc_at = xml.find("<desc>").or_else(|| xml.find("<desc/>"));
+        let header = &xml[..desc_at.unwrap_or(xml.len())];
+        let info = Self::from_shortinfo_message(header)?;
+        if let Some(a) = xml.find("<desc>") {
+            let inner = &xml[a + "<desc>".len()..];
+            let inner = &inner[..inner.rfind("</desc>").unwrap_or(inner.len())];
+            info.desc().append_parsed(inner);
+        }
+        Some(info)
+    }
+
     /// Parse from a shortinfo XML message
     pub fn from_shortinfo_message(xml: &str) -> Option<StreamInfo> {
         let name = extract_tag(xml, "name")?;

@@ -25,6 +25,8 @@ pub struct StreamInlet {
     samples_available: Arc<AtomicU32>,
     post_processing: Arc<AtomicU32>,
     postproc: Mutex<crate::postproc::TimestampPostProcessor>,
+    /// the outlet's full info, once fetched
+    fullinfo: Mutex<Option<StreamInfo>>,
 }
 
 impl StreamInlet {
@@ -53,6 +55,7 @@ impl StreamInlet {
             postproc: Mutex::new(crate::postproc::TimestampPostProcessor::new(
                 PROC_NONE, srate, halftime,
             )),
+            fullinfo: Mutex::new(None),
         }
     }
 
@@ -508,8 +511,100 @@ impl StreamInlet {
         *self.postproc.lock() = crate::postproc::TimestampPostProcessor::new(flags, srate, value);
     }
 
-    pub fn get_fullinfo(&self, _timeout: f64) -> StreamInfo {
+    /// The stream info this inlet was created from (the resolver's short info: no
+    /// description).  Cheap, no network.
+    pub fn info(&self) -> StreamInfo {
         self.info.clone()
+    }
+
+    /// `lsl_get_fullinfo`: the outlet's full info, description included, fetched once with an
+    /// `LSL:fullinfo` request (`timeout` in seconds, ≤ 0 = up to 10 s) and then cached.  If the
+    /// outlet cannot be reached the short info is returned (and the fetch retried next time).
+    pub fn get_fullinfo(&self, timeout: f64) -> StreamInfo {
+        if let Some(f) = self.fullinfo.lock().as_ref() {
+            return f.clone();
+        }
+        let t = if timeout > 0.0 {
+            Duration::from_secs_f64(timeout)
+        } else {
+            Duration::from_secs(10)
+        };
+        match Self::fetch_fullinfo(&self.info, t) {
+            Some(full) => {
+                // keep the addresses the resolver saw (the outlet may not know its own)
+                if full.v4address().is_empty() {
+                    full.set_v4address(&self.info.v4address());
+                }
+                if full.v6address().is_empty() {
+                    full.set_v6address(&self.info.v6address());
+                }
+                if full.hostname().is_empty() {
+                    full.set_hostname(&self.info.hostname());
+                }
+                *self.fullinfo.lock() = Some(full.clone());
+                full
+            }
+            None => self.info.clone(),
+        }
+    }
+
+    /// One `LSL:fullinfo` round trip (IPv6 first when the stream has a v6 port, like the data
+    /// connection).
+    fn fetch_fullinfo(info: &StreamInfo, timeout: Duration) -> Option<StreamInfo> {
+        use std::io::{Read, Write};
+        let deadline = std::time::Instant::now() + timeout;
+        let mut addrs = Vec::new();
+        if info.v6data_port() > 0 {
+            let h = info.v6address();
+            addrs.push(format!(
+                "[{}]:{}",
+                if h.is_empty() { "::1".to_string() } else { h },
+                info.v6data_port()
+            ));
+        }
+        let h = info.v4address();
+        addrs.push(format!(
+            "{}:{}",
+            if h.is_empty() {
+                "127.0.0.1".to_string()
+            } else {
+                h
+            },
+            info.v4data_port()
+        ));
+        for a in addrs {
+            let Ok(sa) = a.parse::<std::net::SocketAddr>() else {
+                continue;
+            };
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let Ok(mut c) = std::net::TcpStream::connect_timeout(&sa, left) else {
+                continue;
+            };
+            let _ = c.set_read_timeout(Some(left));
+            if c.write_all(b"LSL:fullinfo\r\n").is_err() {
+                continue;
+            }
+            let mut xml = Vec::new();
+            let mut buf = [0u8; 8192];
+            while std::time::Instant::now() < deadline {
+                match c.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        xml.extend_from_slice(&buf[..n]);
+                        if xml.windows(7).any(|w| w == b"</info>") {
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(full) = StreamInfo::from_fullinfo_message(&String::from_utf8_lossy(&xml)) {
+                return Some(full);
+            }
+        }
+        None
     }
 }
 

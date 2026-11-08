@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.0.7] — 2026-11-08
+
+### Fixed
+- Outlet TCP server: the stream feed of each consumer now runs on the blocking pool. Its wait
+  for samples used to block a shared async worker without yielding (indefinitely while no
+  samples were pushed), so with consumers connected the outlet could stop answering
+  `LSL:fullinfo` / `LSL:shortinfo` requests and new connections
+- `StreamInlet::get_fullinfo` fetches the outlet's full info (`LSL:fullinfo`) like liblsl's
+  `lsl_get_fullinfo`, so the description reaches inlets; the result is cached per inlet and the
+  resolver's short info is returned if the outlet cannot be reached
+- `xml_unescape` decodes in a single pass (`&amp;lt;` stays the text `&lt;`) and handles numeric
+  character references
+
+### Added
+- `StreamInfo::from_fullinfo_message` (header fields plus the `<desc>` tree)
+- `XmlNode::append_parsed`: parse an XML fragment (liblsl / pugixml style, indented or not) into
+  child elements
+- `StreamInlet::info()`: the stream info the inlet was created from, without network access
+  (`rlsl-sys` uses it for the channel count on every pull)
+
 ## [0.0.6] — 2026-10-26
 
 ### Security
