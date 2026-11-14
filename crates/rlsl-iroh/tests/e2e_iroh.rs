@@ -17,7 +17,7 @@ async fn assert_zero_loss(config: BenchConfig) {
     );
     let results = run_bench(config)
         .await
-        .expect(&format!("bench failed: {}", label));
+        .unwrap_or_else(|_| panic!("bench failed: {}", label));
     assert_eq!(
         results.loss_pct, 0.0,
         "{}: expected 0% loss, got {:.4}%",

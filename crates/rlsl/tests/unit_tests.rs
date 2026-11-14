@@ -340,7 +340,7 @@ mod sample_tests {
         let long = "x".repeat(300); // longer than 255, triggers u32 length
         let mut s = Sample::new(ChannelFormat::String, 1, 0.0);
         s.timestamp = 0.0;
-        s.assign_strings(&[long.clone()]);
+        s.assign_strings(std::slice::from_ref(&long));
 
         let mut buf = Vec::new();
         s.serialize_110(&mut buf);

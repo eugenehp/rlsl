@@ -1,9 +1,19 @@
 //! Time correction: estimates clock offset between inlet and outlet machines.
 //!
 //! Implements NTP-like round-trip probing against the outlet's UDP time service.
-//! Sends `LSL:timedata` queries and computes the offset as:
-//!   offset = ((t1 - t0) + (t2 - t3)) / 2
-//! where t0,t3 are local times and t1,t2 are remote times.
+//! Sends `LSL:timedata` queries and computes
+//!   ((t1 - t0) + (t2 - t3)) / 2
+//! where t0,t3 are local times and t1,t2 are remote times: how far the remote clock is
+//! *ahead of* the local one.
+//!
+//! Two functions report it, differing in sign:
+//!
+//! * [`time_correction`] returns that number as it is (remote minus local) — its behaviour
+//!   since the first release, kept for existing callers. Subtract it from a remote time stamp
+//!   to get local time.
+//! * [`clock_offset`] returns the negative (local minus remote): the number to **add** to a
+//!   remote time stamp, which is what liblsl calls the time correction. It also tells "no
+//!   answer" (`None`) from "no offset".
 
 use crate::clock::local_clock;
 use crate::config::CONFIG;
@@ -13,10 +23,19 @@ use tokio::net::UdpSocket;
 /// Estimate time correction offset between local and remote clocks.
 ///
 /// Sends multiple NTP-like probes to the outlet's UDP service port and
-/// returns the median offset from the probes with the smallest round-trip times.
+/// returns the median offset from the probes with the smallest round-trip times: the remote
+/// clock minus the local clock, or `0.0` when the outlet did not answer. See [`clock_offset`]
+/// for the liblsl convention.
 pub fn time_correction(host: &str, udp_port: u16, timeout: f64) -> f64 {
+    clock_offset(host, udp_port, timeout).map_or(0.0, |local_minus_remote| -local_minus_remote)
+}
+
+/// The number of seconds to **add** to the outlet's time stamps to get local clock time (local
+/// clock minus remote clock) — liblsl's `time_correction()` — or `None` when the outlet did not
+/// answer within `timeout`.
+pub fn clock_offset(host: &str, udp_port: u16, timeout: f64) -> Option<f64> {
     if udp_port == 0 {
-        return 0.0;
+        return None;
     }
 
     // Spawn the async probing on the RUNTIME and wait via a channel
@@ -25,15 +44,17 @@ pub fn time_correction(host: &str, udp_port: u16, timeout: f64) -> f64 {
     let (tx, rx) = std::sync::mpsc::channel();
     crate::RUNTIME.spawn(async move {
         let result = time_correction_async(&host, udp_port, timeout).await;
-        let _ = tx.send(result.unwrap_or(0.0));
+        let _ = tx.send(result.ok().flatten());
     });
 
     // Wait with a timeout
     let deadline = std::time::Duration::from_secs_f64(timeout + 1.0);
-    rx.recv_timeout(deadline).unwrap_or(0.0)
+    rx.recv_timeout(deadline).ok().flatten()
 }
 
-async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<f64, String> {
+/// The correction (local minus remote), or `None` when no probe was answered within the
+/// accepted round-trip time.
+async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<Option<f64>, String> {
     let addr = if host.contains(':') {
         format!("[{}]:{}", host, port) // IPv6
     } else {
@@ -49,7 +70,7 @@ async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<f6
     let max_rtt = CONFIG.time_probe_max_rtt;
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(timeout);
 
-    let mut results: Vec<(f64, f64)> = Vec::new(); // (rtt, offset)
+    let mut results: Vec<(f64, f64)> = Vec::new(); // (rtt, remote clock - local clock)
 
     for wave_id in 0..n_probes {
         if tokio::time::Instant::now() >= deadline {
@@ -97,7 +118,7 @@ async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<f6
     }
 
     if results.is_empty() {
-        return Ok(0.0);
+        return Ok(None);
     }
 
     // Sort by RTT and take the best probes
@@ -108,10 +129,10 @@ async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<f6
         .max(1);
     let best = &results[..n_use];
 
-    // Return median offset of the best probes
+    // Median offset of the best probes, as a correction: local = remote + correction
     let mut offsets: Vec<f64> = best.iter().map(|(_, o)| *o).collect();
     offsets.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median = offsets[offsets.len() / 2];
+    let remote_ahead_by = offsets[offsets.len() / 2];
 
-    Ok(median)
+    Ok(Some(-remote_ahead_by))
 }

@@ -42,7 +42,7 @@ fn main() -> anyhow::Result<()> {
                 report_counter += 1;
 
                 // Report every second
-                if report_counter % (srate as u64).max(1) == 0 {
+                if report_counter.is_multiple_of((srate as u64).max(1)) {
                     let snap = sq.snapshot();
                     eprintln!("  ─── Signal Quality Report ───");
                     eprintln!(

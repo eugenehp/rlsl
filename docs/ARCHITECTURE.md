@@ -37,7 +37,7 @@ implementation of the Real Life Streaming Layer (LSL) protocol.
 rlsl/src/
 ├── lib.rs              # Crate root, shared tokio runtime, prelude
 ├── types.rs            # ChannelFormat, ErrorCode, protocol constants
-├── clock.rs            # Monotonic local_clock() (std::time::Instant)
+├── clock.rs            # Monotonic local_clock() (per process; the machine clock on request)
 ├── config.rs           # lsl_api.cfg loading (env → file → defaults)
 ├── stream_info.rs      # StreamInfo metadata + XPath query matching
 ├── xml_dom.rs          # Mutable XML tree (Arc<Mutex<NodeData>>)

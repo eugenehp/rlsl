@@ -58,25 +58,22 @@ fn main() -> anyhow::Result<()> {
     loop {
         // EEG: sine waves at different frequencies per channel
         let t = sample_idx as f64 / 256.0;
-        for ch in 0..32 {
+        for (ch, value) in eeg_data.iter_mut().enumerate() {
             let freq = 8.0 + ch as f64 * 0.5; // 8–24 Hz
-            eeg_data[ch] = (100.0 * (2.0 * std::f64::consts::PI * freq * t).sin()) as f32;
+            *value = (100.0 * (2.0 * std::f64::consts::PI * freq * t).sin()) as f32;
         }
         eeg_outlet.push_sample_f(&eeg_data, 0.0, true);
 
         // EMG: push 2000/256 ≈ 8 samples per EEG sample
-        if sample_idx % 1 == 0 {
-            for ch in 0..4 {
-                emg_data[ch] =
-                    (50.0 * (2.0 * std::f64::consts::PI * 150.0 * t + ch as f64).sin()) as f32;
-            }
-            emg_outlet.push_sample_f(&emg_data, 0.0, true);
+        for (ch, value) in emg_data.iter_mut().enumerate() {
+            *value = (50.0 * (2.0 * std::f64::consts::PI * 150.0 * t + ch as f64).sin()) as f32;
         }
+        emg_outlet.push_sample_f(&emg_data, 0.0, true);
 
         // Markers: send event every ~2 seconds
-        if sample_idx % 512 == 0 && sample_idx > 0 {
+        if sample_idx.is_multiple_of(512) && sample_idx > 0 {
             let event = format!("event_{}", sample_idx / 512);
-            marker_outlet.push_sample_str(&[event.clone()], 0.0, true);
+            marker_outlet.push_sample_str(std::slice::from_ref(&event), 0.0, true);
             eprintln!("  → marker: {}", event);
         }
 

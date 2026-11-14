@@ -219,7 +219,7 @@ mod inner {
                 }
                 // Forward data from subscribed streams (poll every 20ms)
                 _ = tokio::time::sleep(std::time::Duration::from_millis(20)) => {
-                    for (_uid, rx) in &mut receivers {
+                    for rx in receivers.values_mut() {
                         while let Ok(json) = rx.try_recv() {
                             if ws_tx.send(Message::Text(json.into())).await.is_err() {
                                 break;

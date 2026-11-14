@@ -108,6 +108,8 @@ async fn resolve_query_async(query: &str, minimum: i32, timeout: f64) -> Vec<Str
     // Send queries with retry waves
     let end = tokio::time::Instant::now() + wait;
     let mut results: HashMap<String, StreamInfo> = HashMap::new();
+    // Once `minimum` streams are known: how long to keep listening for their other address.
+    let mut settle_until: Option<tokio::time::Instant> = None;
     let mut wave_interval = Duration::from_millis(500);
     let mut next_wave = tokio::time::Instant::now();
 
@@ -132,7 +134,16 @@ async fn resolve_query_async(query: &str, minimum: i32, timeout: f64) -> Vec<Str
             break;
         }
         if minimum > 0 && results.len() >= minimum as usize {
-            break;
+            // Enough streams. An outlet answers over IPv4 and IPv6, and whichever reply came
+            // first may be the one whose address is of no use from here (a link-local IPv6
+            // address): give the other a moment to arrive, so the stream is known by both.
+            let complete = !CONFIG.allow_ipv4
+                || !CONFIG.allow_ipv6
+                || results.values().all(|i| !i.v4address().is_empty());
+            let grace = *settle_until.get_or_insert(now + Duration::from_millis(100));
+            if complete || now >= grace {
+                break;
+            }
         }
 
         // Send a wave of queries
@@ -167,7 +178,7 @@ async fn resolve_query_async(query: &str, minimum: i32, timeout: f64) -> Vec<Str
                             if info.v4address().is_empty() {
                                 info.set_v4address(&addr.ip().to_string());
                             }
-                            results.entry(uid).or_insert(info);
+                            merge_reply(&mut results, uid, info);
                         }
                     }
                 }
@@ -186,7 +197,7 @@ async fn resolve_query_async(query: &str, minimum: i32, timeout: f64) -> Vec<Str
                             if info.v6address().is_empty() {
                                 info.set_v6address(&addr.ip().to_string());
                             }
-                            results.entry(uid).or_insert(info);
+                            merge_reply(&mut results, uid, info);
                         }
                     }
                 }
@@ -196,6 +207,24 @@ async fn resolve_query_async(query: &str, minimum: i32, timeout: f64) -> Vec<Str
     }
 
     results.into_values().collect()
+}
+
+/// Record a reply. A stream that is already known (it answers once per address family and per
+/// query wave) keeps its entry and gains whichever address the earlier replies did not carry.
+fn merge_reply(results: &mut HashMap<String, StreamInfo>, uid: String, info: StreamInfo) {
+    match results.get(&uid) {
+        Some(known) => {
+            if known.v4address().is_empty() && !info.v4address().is_empty() {
+                known.set_v4address(&info.v4address());
+            }
+            if known.v6address().is_empty() && !info.v6address().is_empty() {
+                known.set_v6address(&info.v6address());
+            }
+        }
+        None => {
+            results.insert(uid, info);
+        }
+    }
 }
 
 fn parse_reply(data: &[u8], expected_id: &str) -> Option<StreamInfo> {

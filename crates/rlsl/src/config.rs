@@ -24,6 +24,9 @@ pub struct ApiConfig {
     pub session_id: String,
     pub use_protocol_version: i32,
     pub smoothing_halftime: f32,
+    /// `clock = system`: [`local_clock`](crate::clock::local_clock) reads the machine clock
+    /// instead of counting from the start of the process.
+    pub system_clock: bool,
     pub time_update_interval: f64,
     pub time_probe_count: i32,
     pub time_probe_interval: f64,
@@ -101,6 +104,7 @@ impl ApiConfig {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(110),
             smoothing_halftime: get_f32("smoothing_halftime", 90.0),
+            system_clock: get("clock").is_some_and(|v| v.trim().eq_ignore_ascii_case("system")),
             time_update_interval: get_f64("time_update_interval", 2.0),
             time_probe_count: get("time_probe_count")
                 .and_then(|v| v.parse().ok())

@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.8] — 2026-11-14
+
+### Added
+
+- **64-bit chunk API**: `StreamOutlet::push_chunk_d` / `push_chunk_i64` (and `push_chunk_i32` /
+  `push_chunk_i16`), `StreamInlet::pull_chunk_i64` (exact over the whole `i64` range, which
+  `pull_chunk_d` is not above 2^53), `pull_chunk_i32` and `pull_chunk_f`. Double and 64-bit
+  integer streams could already be pushed and pulled sample by sample; `tests/sixty_four_bit.rs`
+  now checks them bit for bit across the network, by sample and by chunk.
+- **`--format` for the generators**: `rlsl-gen` and `rlsl gen` take
+  `--format float32|double64|int64|int32|int16|int8` (default `float32`).
+
+### Refactored
+
+- The typed `push_sample_*` / `pull_sample_*` / `push_chunk_*` / `pull_chunk_*` methods share
+  one implementation each instead of a copy per type.
+
+### Added (opt-in; defaults are unchanged)
+
+Nothing below changes what existing code gets: `local_clock()`, `time_correction()` and the
+`PROC_CLOCKSYNC` flag behave exactly as in 0.0.7 unless asked otherwise.
+
+- **Machine clock**: `clock::system_clock()` reads the machine's monotonic clock, the same in
+  every process (liblsl's `steady_clock`: `CLOCK_MONOTONIC` on Linux, `CLOCK_MONOTONIC_RAW` on
+  macOS, the performance counter on Windows). `clock::set_clock_source(ClockSource::System)`,
+  `clock = system` in `lsl_api.cfg` or `LSL_CLOCK=system` make it the source of `local_clock()`,
+  so that time stamps of programs on one machine are directly comparable. The default remains
+  seconds since the process first read the clock.
+- **`StreamInlet::clock_offset()`** (and `time_receiver::clock_offset`): the number to *add* to a
+  stream's time stamps to get local time — liblsl's `time_correction()` — or `None` when the
+  outlet does not answer. `time_correction()` keeps its historical sign (remote minus local,
+  the opposite) and its `0.0` on no answer; its documentation now says so.
+- **`StreamInlet::set_clock_sync(true)`**: with `PROC_CLOCKSYNC`, the inlet estimates its clock
+  offset before the first sample is stamped and renews it every `time_update_interval` (2 s),
+  so time stamps come out on the local clock with no manual call. Without it the flag adds
+  what the last `time_correction()` / `clock_offset()` call stored, as before.
+
+### Changed
+
+- **Inlets connect to the address the resolver saw**, IPv4 first, before guessing loopback. They
+  used to try IPv6 first, which for a stream on another machine is a link-local address without
+  its interface. Streams that connected before still do.
+
+### Fixed
+
+- **Resolved streams could lack a usable address**: an outlet answers a query over IPv4 and
+  IPv6, and only the first reply was kept — when the IPv6 one won, the stream had no IPv4
+  address at all, and connections (data, `LSL:fullinfo`) to its link-local IPv6 address failed.
+  Replies for one stream are now merged, and a resolve that already has enough streams waits up
+  to 100 ms for their other address.
+- **`cargo clippy --workspace --all-targets -- -D warnings` failed** (clippy 1.99 lints in
+  `rlsl-gen`, `rlsl-bench`, `rlsl-wasm`, `rlsl-iroh` tests, `rlsl` tests and examples).
+- **`rlsl-convert` read every XDF stream as float32**: double and 64-bit integer streams (8 bytes
+  per value), 16- and 8-bit integers and string streams were parsed four bytes at a time and came
+  out as garbage. Each stream is now read in the width of its `channel_format`, integers are kept
+  as integers (no rounding above 2^53) with integer / string Parquet columns, and a chunk cut
+  short ends at its last complete sample. 8-byte sample counts are accepted. float32 streams —
+  the only ones that worked — convert exactly as before (Float64 columns).
+
 ## [0.0.7] — 2026-11-08
 
 ### Fixed

@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
         args.iter()
             .position(|a| a == key)
             .and_then(|i| args.get(i + 1))
-            .map(|s| s.clone())
+            .cloned()
             .unwrap_or_else(|| default.to_string())
     };
 

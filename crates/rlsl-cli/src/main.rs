@@ -139,25 +139,26 @@ fn cmd_gen(args: &[String]) -> Result<()> {
     let waveform = get_arg(args, "--waveform", "sine");
     let freq: f64 = get_arg(args, "--freq", "10.0").parse()?;
     let amplitude: f64 = get_arg(args, "--amplitude", "100.0").parse()?;
+    // The stream's sample type: float32 (default), double64, int64, int32, int16, int8.
+    let format_name = get_arg(args, "--format", "float32");
 
-    let info = StreamInfo::new(
-        &name,
-        &type_,
-        nch,
-        srate,
-        ChannelFormat::Float32,
-        "rlsl-cli-gen",
-    );
+    let format = ChannelFormat::from_name(&format_name);
+    if matches!(format, ChannelFormat::Undefined | ChannelFormat::String) {
+        anyhow::bail!(
+            "--format {format_name}: expected float32, double64, int64, int32, int16 or int8"
+        );
+    }
+    let info = StreamInfo::new(&name, &type_, nch, srate, format, "rlsl-cli-gen");
     let outlet = StreamOutlet::new(&info, 0, 360);
 
     eprintln!("🎵 rlsl gen — streaming:");
-    eprintln!("   name={name}, type={type_}, {nch}ch, {srate}Hz");
+    eprintln!("   name={name}, type={type_}, {nch}ch, {srate}Hz, {format_name}");
     eprintln!("   waveform={waveform}, freq={freq}Hz, amplitude={amplitude}");
     eprintln!("   TCP port {}, Ctrl-C to stop", info.v4data_port());
 
     let interval = Duration::from_secs_f64(1.0 / srate);
     let mut sample_idx: u64 = 0;
-    let mut sample = vec![0.0f32; nch as usize];
+    let mut sample = vec![0.0f64; nch as usize];
 
     loop {
         let t = sample_idx as f64 / srate;
@@ -178,10 +179,11 @@ fn cmd_gen(args: &[String]) -> Result<()> {
                 "counter" => (sample_idx * nch as u64 + ch as u64) as f64,
                 _ => amplitude * phase.sin(),
             };
-            *s = value as f32;
+            *s = value;
         }
 
-        outlet.push_sample_f(&sample, 0.0, true);
+        // computed in double precision; the outlet stores each value in the stream's own type
+        outlet.push_sample_d(&sample, 0.0, true);
         sample_idx += 1;
         std::thread::sleep(interval);
     }
@@ -334,6 +336,9 @@ fn cmd_help(sub: Option<&str>) -> Result<()> {
             eprintln!("  --waveform WAVE    sine|square|noise|chirp|sawtooth|counter");
             eprintln!("  --freq HZ          Waveform frequency (default: 10.0)");
             eprintln!("  --amplitude A      Amplitude (default: 100.0)");
+            eprintln!(
+                "  --format F         float32|double64|int64|int32|int16|int8 (default: float32)"
+            );
         }
         Some("bench") | Some("benchmark") => {
             eprintln!("rlsl bench — Measure push→pull latency and throughput");

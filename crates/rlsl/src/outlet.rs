@@ -62,94 +62,88 @@ impl StreamOutlet {
         &self.info
     }
 
-    /// Push a single float sample
-    pub fn push_sample_f(&self, data: &[f32], timestamp: f64, pushthrough: bool) {
+    /// Build a sample of the stream's format, let `fill` put the values in, and queue it.
+    /// A `timestamp` of 0 means now.
+    fn push_sample_with(&self, timestamp: f64, pushthrough: bool, fill: impl FnOnce(&mut Sample)) {
         let ts = if timestamp == 0.0 {
             local_clock()
         } else {
             timestamp
         };
         let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_f32(data);
+        fill(&mut sample);
         sample.pushthrough = pushthrough;
         self.send_buffer.push_sample(sample);
+    }
+
+    /// Push a single float sample
+    pub fn push_sample_f(&self, data: &[f32], timestamp: f64, pushthrough: bool) {
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_f32(data));
     }
 
     /// Push a single double sample
     pub fn push_sample_d(&self, data: &[f64], timestamp: f64, pushthrough: bool) {
-        let ts = if timestamp == 0.0 {
-            local_clock()
-        } else {
-            timestamp
-        };
-        let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_f64(data);
-        sample.pushthrough = pushthrough;
-        self.send_buffer.push_sample(sample);
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_f64(data));
     }
 
+    /// Push a single 32-bit integer sample
     pub fn push_sample_i32(&self, data: &[i32], timestamp: f64, pushthrough: bool) {
-        let ts = if timestamp == 0.0 {
-            local_clock()
-        } else {
-            timestamp
-        };
-        let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_i32(data);
-        sample.pushthrough = pushthrough;
-        self.send_buffer.push_sample(sample);
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_i32(data));
     }
 
+    /// Push a single 16-bit integer sample
     pub fn push_sample_i16(&self, data: &[i16], timestamp: f64, pushthrough: bool) {
-        let ts = if timestamp == 0.0 {
-            local_clock()
-        } else {
-            timestamp
-        };
-        let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_i16(data);
-        sample.pushthrough = pushthrough;
-        self.send_buffer.push_sample(sample);
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_i16(data));
     }
 
+    /// Push a single 64-bit integer sample
     pub fn push_sample_i64(&self, data: &[i64], timestamp: f64, pushthrough: bool) {
-        let ts = if timestamp == 0.0 {
-            local_clock()
-        } else {
-            timestamp
-        };
-        let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_i64(data);
-        sample.pushthrough = pushthrough;
-        self.send_buffer.push_sample(sample);
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_i64(data));
     }
 
+    /// Push a single string sample
     pub fn push_sample_str(&self, data: &[String], timestamp: f64, pushthrough: bool) {
-        let ts = if timestamp == 0.0 {
-            local_clock()
-        } else {
-            timestamp
-        };
-        let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_strings(data);
-        sample.pushthrough = pushthrough;
-        self.send_buffer.push_sample(sample);
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_strings(data));
     }
 
+    /// Push a single sample given as the raw bytes of the stream's format
     pub fn push_sample_raw(&self, data: &[u8], timestamp: f64, pushthrough: bool) {
-        let ts = if timestamp == 0.0 {
-            local_clock()
-        } else {
-            timestamp
-        };
-        let mut sample = Sample::new(self.info.channel_format(), self.info.channel_count(), ts);
-        sample.assign_raw(data);
-        sample.pushthrough = pushthrough;
-        self.send_buffer.push_sample(sample);
+        self.push_sample_with(timestamp, pushthrough, |s| s.assign_raw(data));
     }
 
-    /// Push a chunk of multiplexed float data
-    pub fn push_chunk_f(&self, data: &[f32], timestamp: f64, pushthrough: bool) {
+    /// Push a chunk of multiplexed double data (`n_samples × channel_count` values, row-major).
+    ///
+    /// `timestamp` is the time of the chunk's *last* sample (0 = now); with a regular rate the
+    /// earlier samples are spaced back from it, like [`push_chunk_f`](Self::push_chunk_f).
+    pub fn push_chunk_d(&self, data: &[f64], timestamp: f64, pushthrough: bool) {
+        self.push_chunk_with(data, timestamp, pushthrough, Self::push_sample_d);
+    }
+
+    /// Push a chunk of multiplexed 64-bit integer data; see [`push_chunk_d`](Self::push_chunk_d).
+    pub fn push_chunk_i64(&self, data: &[i64], timestamp: f64, pushthrough: bool) {
+        self.push_chunk_with(data, timestamp, pushthrough, Self::push_sample_i64);
+    }
+
+    /// Push a chunk of multiplexed 32-bit integer data; see [`push_chunk_d`](Self::push_chunk_d).
+    pub fn push_chunk_i32(&self, data: &[i32], timestamp: f64, pushthrough: bool) {
+        self.push_chunk_with(data, timestamp, pushthrough, Self::push_sample_i32);
+    }
+
+    /// Push a chunk of multiplexed 16-bit integer data; see [`push_chunk_d`](Self::push_chunk_d).
+    pub fn push_chunk_i16(&self, data: &[i16], timestamp: f64, pushthrough: bool) {
+        self.push_chunk_with(data, timestamp, pushthrough, Self::push_sample_i16);
+    }
+
+    /// The chunk logic of [`push_chunk_f`](Self::push_chunk_f) for any sample type: the first
+    /// sample carries the chunk's start time, the rest a deduced one, and only the last is
+    /// pushed through.
+    fn push_chunk_with<T>(
+        &self,
+        data: &[T],
+        timestamp: f64,
+        pushthrough: bool,
+        push_sample: fn(&Self, &[T], f64, bool),
+    ) {
         let nch = self.info.channel_count() as usize;
         if nch == 0 {
             return;
@@ -164,15 +158,15 @@ impl StreamOutlet {
         if srate != IRREGULAR_RATE && n_samples > 1 {
             ts -= (n_samples - 1) as f64 / srate;
         }
-        for i in 0..n_samples {
-            let chunk = &data[i * nch..(i + 1) * nch];
-            let is_last = i == n_samples - 1;
+        for (i, row) in data.chunks_exact(nch).enumerate() {
             let sample_ts = if i == 0 { ts } else { DEDUCED_TIMESTAMP };
-            self.push_sample_f(chunk, sample_ts, pushthrough && is_last);
-            if srate != IRREGULAR_RATE && i == 0 {
-                // subsequent samples use deduced timestamp
-            }
+            push_sample(self, row, sample_ts, pushthrough && i == n_samples - 1);
         }
+    }
+
+    /// Push a chunk of multiplexed float data; see [`push_chunk_d`](Self::push_chunk_d).
+    pub fn push_chunk_f(&self, data: &[f32], timestamp: f64, pushthrough: bool) {
+        self.push_chunk_with(data, timestamp, pushthrough, Self::push_sample_f);
     }
 
     /// Check if there are consumers

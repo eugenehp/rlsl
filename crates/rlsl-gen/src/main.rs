@@ -12,6 +12,7 @@
 //!   --waveform WAVE    sine|square|noise|chirp|counter|sawtooth (default: sine)
 //!   --freq HZ          Waveform frequency (default: 10.0)
 //!   --amplitude A      Waveform amplitude (default: 100.0)
+//!   --format F         Sample type: float32|double64|int64|int32|int16|int8 (default: float32)
 //! ```
 
 use rlsl::prelude::*;
@@ -24,7 +25,7 @@ fn main() -> anyhow::Result<()> {
         args.iter()
             .position(|a| a == key)
             .and_then(|i| args.get(i + 1))
-            .map(|s| s.clone())
+            .cloned()
             .unwrap_or_else(|| default.to_string())
     };
 
@@ -35,19 +36,23 @@ fn main() -> anyhow::Result<()> {
     let waveform = get("--waveform", "sine");
     let freq: f64 = get("--freq", "10.0").parse()?;
     let amplitude: f64 = get("--amplitude", "100.0").parse()?;
+    // The stream's sample type: float32 (default), double64, int64, int32, int16, int8.
+    let format_name = get("--format", "float32");
 
-    let info = StreamInfo::new(
-        &name,
-        &type_,
-        nch,
-        srate,
-        ChannelFormat::Float32,
-        "rlsl-gen",
-    );
+    let format = ChannelFormat::from_name(&format_name);
+    if matches!(format, ChannelFormat::Undefined | ChannelFormat::String) {
+        anyhow::bail!(
+            "--format {format_name}: expected float32, double64, int64, int32, int16 or int8"
+        );
+    }
+    let info = StreamInfo::new(&name, &type_, nch, srate, format, "rlsl-gen");
     let outlet = StreamOutlet::new(&info, 0, 360);
 
     eprintln!("🎵 rlsl-gen streaming:");
-    eprintln!("   name={}, type={}, {}ch, {}Hz", name, type_, nch, srate);
+    eprintln!(
+        "   name={}, type={}, {}ch, {}Hz, {}",
+        name, type_, nch, srate, format_name
+    );
     eprintln!(
         "   waveform={}, freq={}Hz, amplitude={}",
         waveform, freq, amplitude
@@ -56,12 +61,12 @@ fn main() -> anyhow::Result<()> {
 
     let interval = Duration::from_secs_f64(1.0 / srate);
     let mut sample_idx: u64 = 0;
-    let mut sample = vec![0.0f32; nch as usize];
+    let mut sample = vec![0.0f64; nch as usize];
 
     loop {
         let t = sample_idx as f64 / srate;
 
-        for ch in 0..nch as usize {
+        for (ch, out) in sample.iter_mut().enumerate() {
             // Phase-offset each channel slightly
             let phase = 2.0 * std::f64::consts::PI * freq * t + ch as f64 * 0.5;
 
@@ -81,10 +86,11 @@ fn main() -> anyhow::Result<()> {
                 _ => amplitude * phase.sin(),
             };
 
-            sample[ch] = value as f32;
+            *out = value;
         }
 
-        outlet.push_sample_f(&sample, 0.0, true);
+        // computed in double precision; the outlet stores each value in the stream's own type
+        outlet.push_sample_d(&sample, 0.0, true);
         sample_idx += 1;
         std::thread::sleep(interval);
     }

@@ -22,6 +22,12 @@ pub struct StreamInlet {
     connected: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     time_correction: Arc<Mutex<f64>>,
+    /// When the time correction was last estimated (for the clock-sync post-processing).
+    time_correction_at: Arc<Mutex<Option<std::time::Instant>>>,
+    /// A background re-estimate is under way.
+    time_correction_refreshing: Arc<AtomicBool>,
+    /// [`set_clock_sync`](Self::set_clock_sync): the inlet keeps the correction itself.
+    auto_clock_sync: AtomicBool,
     samples_available: Arc<AtomicU32>,
     post_processing: Arc<AtomicU32>,
     postproc: Mutex<crate::postproc::TimestampPostProcessor>,
@@ -50,6 +56,9 @@ impl StreamInlet {
             connected: connected.clone(),
             shutdown: shutdown.clone(),
             time_correction,
+            time_correction_at: Arc::new(Mutex::new(None)),
+            time_correction_refreshing: Arc::new(AtomicBool::new(false)),
+            auto_clock_sync: AtomicBool::new(false),
             samples_available,
             post_processing: post_processing.clone(),
             postproc: Mutex::new(crate::postproc::TimestampPostProcessor::new(
@@ -266,108 +275,84 @@ impl StreamInlet {
         Ok(())
     }
 
-    /// Try to connect via IPv6 first (if the stream advertises a v6 port),
-    /// then fall back to IPv4.
+    /// The addresses to reach the outlet's data port at, most promising first: an address the
+    /// resolver actually saw the outlet at before a loopback guess, IPv4 before IPv6 (a
+    /// link-local IPv6 address is only usable with its interface, which is not kept).
+    fn data_addresses(info: &StreamInfo) -> Vec<String> {
+        let (v4, v6) = (info.v4address(), info.v6address());
+        let (v4_port, v6_port) = (info.v4data_port(), info.v6data_port());
+        let mut out = Vec::new();
+        if !v4.is_empty() && v4_port > 0 {
+            out.push(format!("{v4}:{v4_port}"));
+        }
+        if !v6.is_empty() && v6_port > 0 {
+            out.push(format!("[{v6}]:{v6_port}"));
+        }
+        // same machine
+        if v4.is_empty() && v4_port > 0 {
+            out.push(format!("127.0.0.1:{v4_port}"));
+        }
+        if v6.is_empty() && v6_port > 0 {
+            out.push(format!("[::1]:{v6_port}"));
+        }
+        out
+    }
+
+    /// Connect to the outlet's data port, trying [`data_addresses`](Self::data_addresses) in
+    /// order.
     async fn try_connect(info: &StreamInfo) -> Result<TcpStream, String> {
-        // Try IPv6 if the stream has a v6 data port
-        let v6_port = info.v6data_port();
-        if v6_port > 0 {
-            let v6_addr = info.v6address();
-            let host = if v6_addr.is_empty() {
-                "::1".to_string()
-            } else {
-                v6_addr
-            };
-            let addr = format!("[{}]:{}", host, v6_port);
-            log::trace!("[inlet] Trying IPv6 {}...", addr);
+        let mut last_error = "the stream has no data port".to_string();
+        for addr in Self::data_addresses(info) {
+            log::trace!("[inlet] Connecting {}...", addr);
             match TcpStream::connect(&addr).await {
                 Ok(stream) => {
-                    log::trace!("[inlet] Connected via IPv6");
+                    log::trace!("[inlet] Connected via {}", addr);
                     return Ok(stream);
                 }
                 Err(e) => {
-                    log::trace!("[inlet] IPv6 connect failed: {}, trying IPv4", e);
+                    log::trace!("[inlet] Connect to {} failed: {}", addr, e);
+                    last_error = e.to_string();
                 }
             }
         }
+        Err(last_error)
+    }
 
-        // Fall back to IPv4
-        let port = info.v4data_port();
-        let addr_str = info.v4address();
-        let host = if addr_str.is_empty() {
-            "127.0.0.1".to_string()
-        } else {
-            addr_str
-        };
-        let addr = format!("{}:{}", host, port);
-        log::trace!("[inlet] Connecting IPv4 {}...", addr);
-        let stream = TcpStream::connect(&addr).await.map_err(|e| {
-            log::trace!("[inlet] Connect error: {}", e);
-            e.to_string()
-        })?;
-        log::trace!("[inlet] Connected via IPv4");
-        Ok(stream)
+    /// Pull one sample and hand it to `take`; the time stamp, or 0 on timeout.
+    fn pull_sample_with(&self, timeout: f64, take: impl FnOnce(&Sample)) -> Result<f64, String> {
+        match self.pull_sample_raw(timeout)? {
+            Some(s) => {
+                take(&s);
+                self.samples_available.fetch_sub(1, Ordering::Relaxed);
+                Ok(self.postprocess_timestamp(s.timestamp))
+            }
+            None => Ok(0.0),
+        }
     }
 
     /// Pull a single float sample. Returns the timestamp, or 0 on timeout.
     pub fn pull_sample_f(&self, buffer: &mut [f32], timeout: f64) -> Result<f64, String> {
-        let sample = self.pull_sample_raw(timeout)?;
-        match sample {
-            Some(s) => {
-                s.retrieve_f32(buffer);
-                self.samples_available.fetch_sub(1, Ordering::Relaxed);
-                Ok(self.postprocess_timestamp(s.timestamp))
-            }
-            None => Ok(0.0),
-        }
+        self.pull_sample_with(timeout, |s| s.retrieve_f32(buffer))
     }
 
+    /// Pull a single double sample. Returns the timestamp, or 0 on timeout.
     pub fn pull_sample_d(&self, buffer: &mut [f64], timeout: f64) -> Result<f64, String> {
-        let sample = self.pull_sample_raw(timeout)?;
-        match sample {
-            Some(s) => {
-                s.retrieve_f64(buffer);
-                self.samples_available.fetch_sub(1, Ordering::Relaxed);
-                Ok(self.postprocess_timestamp(s.timestamp))
-            }
-            None => Ok(0.0),
-        }
+        self.pull_sample_with(timeout, |s| s.retrieve_f64(buffer))
     }
 
+    /// Pull a single 32-bit integer sample. Returns the timestamp, or 0 on timeout.
     pub fn pull_sample_i32(&self, buffer: &mut [i32], timeout: f64) -> Result<f64, String> {
-        let sample = self.pull_sample_raw(timeout)?;
-        match sample {
-            Some(s) => {
-                s.retrieve_i32(buffer);
-                self.samples_available.fetch_sub(1, Ordering::Relaxed);
-                Ok(self.postprocess_timestamp(s.timestamp))
-            }
-            None => Ok(0.0),
-        }
+        self.pull_sample_with(timeout, |s| s.retrieve_i32(buffer))
     }
 
+    /// Pull a single 16-bit integer sample. Returns the timestamp, or 0 on timeout.
     pub fn pull_sample_i16(&self, buffer: &mut [i16], timeout: f64) -> Result<f64, String> {
-        let sample = self.pull_sample_raw(timeout)?;
-        match sample {
-            Some(s) => {
-                s.retrieve_i16(buffer);
-                self.samples_available.fetch_sub(1, Ordering::Relaxed);
-                Ok(self.postprocess_timestamp(s.timestamp))
-            }
-            None => Ok(0.0),
-        }
+        self.pull_sample_with(timeout, |s| s.retrieve_i16(buffer))
     }
 
+    /// Pull a single 64-bit integer sample. Returns the timestamp, or 0 on timeout.
     pub fn pull_sample_i64(&self, buffer: &mut [i64], timeout: f64) -> Result<f64, String> {
-        let sample = self.pull_sample_raw(timeout)?;
-        match sample {
-            Some(s) => {
-                s.retrieve_i64(buffer);
-                self.samples_available.fetch_sub(1, Ordering::Relaxed);
-                Ok(self.postprocess_timestamp(s.timestamp))
-            }
-            None => Ok(0.0),
-        }
+        self.pull_sample_with(timeout, |s| s.retrieve_i64(buffer))
     }
 
     pub fn pull_sample_str(&self, timeout: f64) -> Result<(Vec<String>, f64), String> {
@@ -410,30 +395,108 @@ impl StreamInlet {
         if flags == PROC_NONE {
             return ts;
         }
+        if flags & PROC_CLOCKSYNC != 0 && self.auto_clock_sync.load(Ordering::Relaxed) {
+            self.keep_time_correction_fresh();
+        }
         let mut proc = self.postproc.lock();
         proc.set_clock_offset(*self.time_correction.lock());
         proc.process(ts)
+    }
+
+    /// For automatic clock synchronisation: make sure there is a correction and that it is not
+    /// older than the configured update interval. The first estimate is waited for (the first
+    /// samples would otherwise come out on the outlet's clock and the later ones on this
+    /// machine's); after that the estimate is renewed in the background.
+    fn keep_time_correction_fresh(&self) {
+        let age = self.time_correction_at.lock().map(|t| t.elapsed());
+        match age {
+            None => {
+                let _ = self.clock_offset(2.0);
+                // tried: do not block every sample when the outlet does not answer
+                self.time_correction_at
+                    .lock()
+                    .get_or_insert_with(std::time::Instant::now);
+            }
+            Some(age) if age.as_secs_f64() >= crate::config::CONFIG.time_update_interval => {
+                if self.time_correction_refreshing.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                let (host, port) = self.time_service_address();
+                let (value, at, refreshing) = (
+                    self.time_correction.clone(),
+                    self.time_correction_at.clone(),
+                    self.time_correction_refreshing.clone(),
+                );
+                let spawned = std::thread::Builder::new()
+                    .name("lsl_time_sync".to_string())
+                    .spawn(move || {
+                        if let Some(offset) = crate::time_receiver::clock_offset(&host, port, 2.0) {
+                            *value.lock() = offset;
+                        }
+                        *at.lock() = Some(std::time::Instant::now());
+                        refreshing.store(false, Ordering::SeqCst);
+                    });
+                if spawned.is_err() {
+                    self.time_correction_refreshing
+                        .store(false, Ordering::SeqCst);
+                }
+            }
+            Some(_) => {}
+        }
     }
 
     pub fn close_stream(&self) {
         // The receiver thread will notice shutdown
     }
 
+    /// Where the outlet answers time queries.
+    fn time_service_address(&self) -> (String, u16) {
+        let v4 = self.info.v4address();
+        let host = if v4.is_empty() {
+            "127.0.0.1".to_string()
+        } else {
+            v4
+        };
+        (host, self.info.v4service_port())
+    }
+
     /// Estimate the clock offset between this machine and the outlet's machine.
     /// Uses NTP-like probing against the outlet's UDP service port.
+    ///
+    /// Returns the outlet's clock minus this machine's (0 when the outlet does not answer), and
+    /// keeps that value as the offset the `PROC_CLOCKSYNC` post-processing adds — both exactly
+    /// as in every release so far. Note the sign: it is the opposite of liblsl's
+    /// `time_correction()`. For the liblsl convention use [`clock_offset`](Self::clock_offset);
+    /// for clock-synchronised time stamps, [`set_clock_sync`](Self::set_clock_sync).
     pub fn time_correction(&self, timeout: f64) -> f64 {
-        let host = {
-            let v4 = self.info.v4address();
-            if v4.is_empty() {
-                "127.0.0.1".to_string()
-            } else {
-                v4
-            }
-        };
-        let port = self.info.v4service_port();
+        let (host, port) = self.time_service_address();
         let offset = crate::time_receiver::time_correction(&host, port, timeout);
         *self.time_correction.lock() = offset;
         offset
+    }
+
+    /// The number of seconds to **add** to this stream's time stamps to get this machine's
+    /// [`local_clock`](crate::clock::local_clock) time (this clock minus the outlet's) — what
+    /// liblsl's `time_correction()` returns. `None` when the outlet does not answer within
+    /// `timeout`. A successful estimate becomes the offset `PROC_CLOCKSYNC` adds.
+    pub fn clock_offset(&self, timeout: f64) -> Option<f64> {
+        let (host, port) = self.time_service_address();
+        let offset = crate::time_receiver::clock_offset(&host, port, timeout)?;
+        *self.time_correction.lock() = offset;
+        *self.time_correction_at.lock() = Some(std::time::Instant::now());
+        Some(offset)
+    }
+
+    /// Let the inlet keep its clock offset itself: with this on and `PROC_CLOCKSYNC` set, time
+    /// stamps come out on this machine's clock without any call to
+    /// [`time_correction`](Self::time_correction) — the offset is estimated before the first
+    /// sample is stamped and renewed in the background every `time_update_interval` (2 s).
+    ///
+    /// Off by default: `PROC_CLOCKSYNC` then adds whatever the last
+    /// [`time_correction`](Self::time_correction) / [`clock_offset`](Self::clock_offset) call
+    /// stored, as it always has.
+    pub fn set_clock_sync(&self, automatic: bool) {
+        self.auto_clock_sync.store(automatic, Ordering::Relaxed);
     }
 
     pub fn set_postprocessing(&self, flags: u32) {
@@ -457,35 +520,59 @@ impl StreamInlet {
         max_samples: usize,
         timeout: f64,
     ) -> Result<(Vec<f64>, Vec<f64>), String> {
+        self.pull_chunk_with(max_samples, timeout, 0f64, Sample::retrieve_f64)
+    }
+
+    /// [`pull_chunk_d`](Self::pull_chunk_d) for 64-bit integer data: `(timestamps, data)` with
+    /// the values exact over the whole `i64` range (a double holds integers only up to 2^53).
+    pub fn pull_chunk_i64(
+        &self,
+        max_samples: usize,
+        timeout: f64,
+    ) -> Result<(Vec<f64>, Vec<i64>), String> {
+        self.pull_chunk_with(max_samples, timeout, 0i64, Sample::retrieve_i64)
+    }
+
+    /// [`pull_chunk_d`](Self::pull_chunk_d) for 32-bit integer data.
+    pub fn pull_chunk_i32(
+        &self,
+        max_samples: usize,
+        timeout: f64,
+    ) -> Result<(Vec<f64>, Vec<i32>), String> {
+        self.pull_chunk_with(max_samples, timeout, 0i32, Sample::retrieve_i32)
+    }
+
+    /// [`pull_chunk_d`](Self::pull_chunk_d) for single-precision data.
+    pub fn pull_chunk_f(
+        &self,
+        max_samples: usize,
+        timeout: f64,
+    ) -> Result<(Vec<f64>, Vec<f32>), String> {
+        self.pull_chunk_with(max_samples, timeout, 0f32, Sample::retrieve_f32)
+    }
+
+    /// The chunk logic of [`pull_chunk_d`](Self::pull_chunk_d) for any sample type: the first
+    /// sample may block up to `timeout`, the rest are taken only if already there.
+    fn pull_chunk_with<T: Copy>(
+        &self,
+        max_samples: usize,
+        timeout: f64,
+        zero: T,
+        retrieve: fn(&Sample, &mut [T]),
+    ) -> Result<(Vec<f64>, Vec<T>), String> {
         let n_ch = self.info.channel_count() as usize;
         let mut timestamps = Vec::with_capacity(max_samples);
         let mut data = Vec::with_capacity(max_samples * n_ch);
-        let mut buf = vec![0.0f64; n_ch];
-
-        // First sample: may block up to `timeout`
-        let first = self.pull_sample_raw(timeout)?;
-        if let Some(s) = first {
-            s.retrieve_f64(&mut buf);
+        let mut buf = vec![zero; n_ch];
+        for i in 0..max_samples {
+            let Some(s) = self.pull_sample_raw(if i == 0 { timeout } else { 0.0 })? else {
+                break;
+            };
+            retrieve(&s, &mut buf);
             self.samples_available.fetch_sub(1, Ordering::Relaxed);
             timestamps.push(self.postprocess_timestamp(s.timestamp));
             data.extend_from_slice(&buf);
-        } else {
-            return Ok((timestamps, data));
         }
-
-        // Drain remaining available samples without blocking
-        for _ in 1..max_samples {
-            match self.pull_sample_raw(0.0)? {
-                Some(s) => {
-                    s.retrieve_f64(&mut buf);
-                    self.samples_available.fetch_sub(1, Ordering::Relaxed);
-                    timestamps.push(self.postprocess_timestamp(s.timestamp));
-                    data.extend_from_slice(&buf);
-                }
-                None => break,
-            }
-        }
-
         Ok((timestamps, data))
     }
 
@@ -548,30 +635,11 @@ impl StreamInlet {
         }
     }
 
-    /// One `LSL:fullinfo` round trip (IPv6 first when the stream has a v6 port, like the data
-    /// connection).
+    /// One `LSL:fullinfo` round trip, at the addresses the data connection uses.
     fn fetch_fullinfo(info: &StreamInfo, timeout: Duration) -> Option<StreamInfo> {
         use std::io::{Read, Write};
         let deadline = std::time::Instant::now() + timeout;
-        let mut addrs = Vec::new();
-        if info.v6data_port() > 0 {
-            let h = info.v6address();
-            addrs.push(format!(
-                "[{}]:{}",
-                if h.is_empty() { "::1".to_string() } else { h },
-                info.v6data_port()
-            ));
-        }
-        let h = info.v4address();
-        addrs.push(format!(
-            "{}:{}",
-            if h.is_empty() {
-                "127.0.0.1".to_string()
-            } else {
-                h
-            },
-            info.v4data_port()
-        ));
+        let addrs = Self::data_addresses(info);
         for a in addrs {
             let Ok(sa) = a.parse::<std::net::SocketAddr>() else {
                 continue;
