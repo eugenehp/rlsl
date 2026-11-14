@@ -31,7 +31,7 @@ jobs:
             lib_ext: ".so"
             cross: true
           - name: macos-x86_64
-            os: macos-14
+            os: macos-latest  # Apple silicon runner, cross-compiles to x86_64
             target: x86_64-apple-darwin
             ext: ""
             lib_ext: ".dylib"
@@ -47,7 +47,7 @@ jobs:
             lib_ext: ".dll"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -145,7 +145,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.name }}
           path: rlsl-*.*
@@ -155,7 +155,7 @@ jobs:
     name: Build WASM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -175,7 +175,7 @@ jobs:
           cp crates/rlsl-wasm/www/index.html "$DIR/"
           tar czf "${DIR}.tar.gz" "$DIR"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-wasm
           path: rlsl-wasm-*.tar.gz
@@ -196,7 +196,7 @@ jobs:
             target: aarch64
             manylinux: auto
           - name: macos-x86_64
-            os: macos-14
+            os: macos-latest  # Apple silicon runner, cross-compiles to x86_64
             target: x86_64
             manylinux: auto
           - name: macos-aarch64
@@ -209,8 +209,8 @@ jobs:
             manylinux: auto
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Build wheels
@@ -224,7 +224,7 @@ jobs:
             --out dist
             --interpreter 3.9 3.10 3.11 3.12 3.13
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: python-${{ matrix.name }}
           path: dist/*.whl
@@ -235,10 +235,10 @@ jobs:
     needs: [build, wasm, python]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -246,7 +246,7 @@ jobs:
         run: find artifacts -type f | sort
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           files: |
@@ -286,7 +286,7 @@ jobs:
       id-token: write
     steps:
       - name: Download wheels
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: python-*
           path: dist
@@ -305,15 +305,15 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v') && vars.NPM_ENABLED == 'true'
     environment: npm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
       - name: Build WASM
         working-directory: crates/rlsl-wasm
@@ -342,14 +342,24 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') && vars.CRATES_IO_ENABLED == 'true'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Publish exg
-        run: cargo publish -p exg --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish rlsl
-        run: cargo publish -p rlsl --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Publish rlsl-rec
-        run: cargo publish -p rlsl-rec --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      # rlsl first (the others depend on it); versions already on crates.io are skipped, so a
+      # re-run, or a release whose crates were published by hand, does not fail here
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          for CRATE in rlsl rlsl-rec rlsl-iroh; do
+            VERSION=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r --arg c "$CRATE" '.packages[] | select(.name == $c) | .version')
+            if curl -sf -A "rlsl-release (github.com/eugenehp/rlsl)" \
+                "https://crates.io/api/v1/crates/$CRATE/$VERSION" > /dev/null; then
+              echo "$CRATE $VERSION is already on crates.io, skipping"
+            else
+              cargo publish -p "$CRATE"
+            fi
+          done
 
   # ── Docker image ──────────────────────────────────────────────────
   docker:
@@ -360,15 +370,15 @@ jobs:
     permissions:
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

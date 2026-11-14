@@ -206,13 +206,14 @@ fn automatic_clock_sync_gives_local_time_stamps() {
 
     let mut buf = [0f32; 1];
     for k in 0..3 {
-        // stamped on the "remote" clock
-        outlet.push_sample_f(&[k as f32], rlsl::clock::local_clock() + AHEAD, true);
+        // stamped on the "remote" clock; compared with the local time of the push, not of the
+        // pull, which for the first sample waits for the offset estimate (~0.5 s of probes)
+        let sent = rlsl::clock::local_clock();
+        outlet.push_sample_f(&[k as f32], sent + AHEAD, true);
         let ts = inlet.pull_sample_f(&mut buf, 5.0).unwrap();
-        let now = rlsl::clock::local_clock();
         assert!(
-            (now - ts).abs() < 0.5,
-            "sample {k} stamped {ts}, local clock {now}"
+            (ts - sent).abs() < 0.05,
+            "sample {k} stamped {ts}, sent at local {sent}"
         );
         assert_eq!(buf[0], k as f32);
     }
