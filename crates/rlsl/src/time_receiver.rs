@@ -26,8 +26,16 @@ use tokio::net::UdpSocket;
 /// returns the median offset from the probes with the smallest round-trip times: the remote
 /// clock minus the local clock, or `0.0` when the outlet did not answer. See [`clock_offset`]
 /// for the liblsl convention.
+///
+/// With the cargo feature `liblsl-defaults` this returns what liblsl's `time_correction()`
+/// does instead: [`clock_offset`], or `0.0` when the outlet did not answer.
 pub fn time_correction(host: &str, udp_port: u16, timeout: f64) -> f64 {
-    clock_offset(host, udp_port, timeout).map_or(0.0, |local_minus_remote| -local_minus_remote)
+    let local_minus_remote = clock_offset(host, udp_port, timeout);
+    if cfg!(feature = "liblsl-defaults") {
+        local_minus_remote.unwrap_or(0.0)
+    } else {
+        local_minus_remote.map_or(0.0, |offset| -offset)
+    }
 }
 
 /// The number of seconds to **add** to the outlet's time stamps to get local clock time (local

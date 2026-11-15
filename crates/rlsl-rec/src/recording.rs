@@ -22,6 +22,9 @@ use tokio::task::JoinHandle;
 pub enum RecordingFormat {
     Xdf,
     Parquet,
+    /// One `.h5` file (cargo feature `hdf5`: a pure-Rust HDF5 writer, no libhdf5 needed).
+    #[cfg(feature = "hdf5")]
+    Hdf5,
 }
 
 impl RecordingFormat {
@@ -29,16 +32,20 @@ impl RecordingFormat {
         match self {
             Self::Xdf => "XDF",
             Self::Parquet => "Parquet",
+            #[cfg(feature = "hdf5")]
+            Self::Hdf5 => "HDF5",
         }
     }
 }
 
 // ── Writer abstraction ───────────────────────────────────────────────
 
-/// Unifies XDF and Parquet writers behind a common interface.
+/// Unifies the XDF, Parquet and HDF5 writers behind a common interface.
 enum Writer {
     Xdf(Arc<XdfWriter>),
     Parquet(Arc<ParquetRecordingWriter>),
+    #[cfg(feature = "hdf5")]
+    Hdf5(Arc<crate::hdf5_writer::Hdf5RecordingWriter>),
 }
 
 impl Writer {
@@ -51,6 +58,8 @@ impl Writer {
         match self {
             Writer::Xdf(w) => w.write_stream_header(stream_id, header_xml),
             Writer::Parquet(w) => w.write_stream_header(stream_id, info, header_xml),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(w) => w.write_stream_header(stream_id, info, header_xml),
         }
     }
 
@@ -64,6 +73,25 @@ impl Writer {
         match self {
             Writer::Xdf(w) => w.write_samples_numeric(stream_id, timestamps, data, n_channels),
             Writer::Parquet(w) => w.write_samples_numeric(stream_id, timestamps, data, n_channels),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(w) => w.write_samples_numeric(stream_id, timestamps, data, n_channels),
+        }
+    }
+
+    /// String samples (markers): `data` is `n × n_channels`, row-major, every sample with its
+    /// own time stamp.
+    fn write_samples_string(
+        &self,
+        stream_id: u32,
+        timestamps: &[f64],
+        data: &[String],
+        n_channels: u32,
+    ) -> anyhow::Result<()> {
+        match self {
+            Writer::Xdf(w) => w.write_samples_string(stream_id, timestamps, data, n_channels),
+            Writer::Parquet(w) => w.write_samples_string(stream_id, timestamps, data),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(w) => w.write_samples_string(stream_id, timestamps, data),
         }
     }
 
@@ -76,6 +104,8 @@ impl Writer {
         match self {
             Writer::Xdf(w) => w.write_clock_offset(stream_id, collection_time, offset),
             Writer::Parquet(w) => w.write_clock_offset(stream_id, collection_time, offset),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(w) => w.write_clock_offset(stream_id, collection_time, offset),
         }
     }
 
@@ -83,6 +113,8 @@ impl Writer {
         match self {
             Writer::Xdf(w) => w.write_stream_footer(stream_id, footer_xml),
             Writer::Parquet(_) => Ok(()),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(_) => Ok(()),
         }
     }
 
@@ -96,6 +128,8 @@ impl Writer {
         match self {
             Writer::Xdf(_) => Ok(()),
             Writer::Parquet(w) => w.write_stream_footer(stream_id, first_ts, last_ts, sample_count),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(w) => w.write_stream_footer(stream_id, first_ts, last_ts, sample_count),
         }
     }
 
@@ -103,6 +137,8 @@ impl Writer {
         match self {
             Writer::Xdf(w) => w.write_boundary(),
             Writer::Parquet(_) => Ok(()),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(_) => Ok(()),
         }
     }
 }
@@ -112,6 +148,8 @@ impl Clone for Writer {
         match self {
             Writer::Xdf(w) => Writer::Xdf(w.clone()),
             Writer::Parquet(w) => Writer::Parquet(w.clone()),
+            #[cfg(feature = "hdf5")]
+            Writer::Hdf5(w) => Writer::Hdf5(w.clone()),
         }
     }
 }
@@ -162,11 +200,31 @@ impl Recording {
         streams: &[StreamInfo],
         format: RecordingFormat,
     ) -> anyhow::Result<Self> {
+        Self::start_with_parquet_options(
+            filename,
+            streams,
+            format,
+            crate::parquet_writer::ParquetOptions::from_env(),
+        )
+    }
+
+    /// [`start_with_format`](Self::start_with_format), choosing how Parquet files are written
+    /// (ignored for XDF).
+    pub fn start_with_parquet_options(
+        filename: &str,
+        streams: &[StreamInfo],
+        format: RecordingFormat,
+        parquet: crate::parquet_writer::ParquetOptions,
+    ) -> anyhow::Result<Self> {
         let writer = match format {
             RecordingFormat::Xdf => Writer::Xdf(Arc::new(XdfWriter::new(filename)?)),
-            RecordingFormat::Parquet => {
-                Writer::Parquet(Arc::new(ParquetRecordingWriter::new(filename)?))
-            }
+            RecordingFormat::Parquet => Writer::Parquet(Arc::new(
+                ParquetRecordingWriter::new_with_options(filename, parquet)?,
+            )),
+            #[cfg(feature = "hdf5")]
+            RecordingFormat::Hdf5 => Writer::Hdf5(Arc::new(
+                crate::hdf5_writer::Hdf5RecordingWriter::new(filename)?,
+            )),
         };
         let shutdown = Arc::new(AtomicBool::new(false));
         let state = Arc::new(RecordingState {
@@ -240,16 +298,29 @@ impl Recording {
             let _ = task.await;
         }
 
-        // Finalize Parquet (close files, write JSON sidecar)
-        if let Some(Writer::Parquet(arc)) = self.writer.take() {
-            if let Ok(pw) = Arc::try_unwrap(arc) {
+        match self.writer.take() {
+            // Finalize Parquet (close files, write JSON sidecar)
+            Some(Writer::Parquet(arc)) => {
+                if let Ok(pw) = Arc::try_unwrap(arc) {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Err(e) = pw.close() {
+                            eprintln!("Error finalizing Parquet: {}", e);
+                        }
+                    })
+                    .await;
+                }
+            }
+            // An HDF5 file is only whole once it is closed.
+            #[cfg(feature = "hdf5")]
+            Some(Writer::Hdf5(h5)) => {
                 let _ = tokio::task::spawn_blocking(move || {
-                    if let Err(e) = pw.close() {
-                        eprintln!("Error finalizing Parquet: {}", e);
+                    if let Err(e) = h5.close() {
+                        eprintln!("Error finalizing HDF5: {}", e);
                     }
                 })
                 .await;
             }
+            _ => {}
         }
     }
 
@@ -264,6 +335,10 @@ impl Recording {
     pub fn file_size(&self) -> u64 {
         match &self.writer {
             Some(Writer::Xdf(_)) => std::fs::metadata(&self.filename)
+                .map(|m| m.len())
+                .unwrap_or(0),
+            #[cfg(feature = "hdf5")]
+            Some(Writer::Hdf5(_)) => std::fs::metadata(&self.filename)
                 .map(|m| m.len())
                 .unwrap_or(0),
             Some(Writer::Parquet(_)) => std::fs::read_dir(&self.filename)
@@ -304,6 +379,11 @@ fn record_stream(
         .open_stream(10.0)
         .map_err(|e| anyhow::anyhow!("open_stream: {}", e))?;
 
+    // The stream as its outlet describes it: a resolved stream carries no description, and
+    // with it the channel labels and everything else an outlet says about itself would be
+    // missing from the recording.
+    let full = inlet.get_fullinfo(5.0);
+    let info = &full;
     let header_xml = info.to_fullinfo_message();
     writer.write_stream_header(stream_id, info, &header_xml)?;
 
@@ -370,6 +450,19 @@ fn record_stream(
                     &mut total_samples,
                 )?;
             }
+            ChannelFormat::Int8 => {
+                pull_chunk_typed::<i8>(
+                    &inlet,
+                    nch,
+                    srate,
+                    stream_id,
+                    writer,
+                    state,
+                    &mut first_ts,
+                    &mut last_ts,
+                    &mut total_samples,
+                )?;
+            }
             ChannelFormat::Int64 => {
                 pull_chunk_typed::<i64>(
                     &inlet,
@@ -383,6 +476,24 @@ fn record_stream(
                     &mut total_samples,
                 )?;
             }
+            ChannelFormat::String => {
+                // Markers and other text: every sample carries its own time stamp (there is
+                // no rate to deduce one from). Up to 0.0.8 string streams were not recorded.
+                let (stamps, texts) = inlet
+                    .pull_chunk_str(4096, 0.0)
+                    .map_err(|e| anyhow::anyhow!("pull: {e}"))?;
+                if let (Some(first), Some(last)) = (stamps.first(), stamps.last()) {
+                    if first_ts == 0.0 {
+                        first_ts = *first;
+                    }
+                    last_ts = *last;
+                    writer.write_samples_string(stream_id, &stamps, &texts, nch as u32)?;
+                    total_samples += stamps.len() as u64;
+                    state
+                        .sample_count
+                        .fetch_add(stamps.len() as u64, Ordering::Relaxed);
+                }
+            }
             _ => {
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -391,8 +502,13 @@ fn record_stream(
         // Periodic clock offset
         let now = local_clock();
         if now - last_offset_time > 5.0 {
-            let offset = inlet.time_correction(2.0);
-            writer.write_clock_offset(stream_id, now, offset)?;
+            // The value to ADD to the stream's time stamps to get this machine's clock — what
+            // an XDF ClockOffset chunk holds and what readers (pyxdf, EEGLAB) apply. Nothing is
+            // written when the outlet does not answer: a made-up zero would be applied as a
+            // measurement. (Up to 0.0.8 the opposite sign was written, and 0 on no answer.)
+            if let Some(offset) = inlet.clock_offset(2.0) {
+                writer.write_clock_offset(stream_id, now, offset)?;
+            }
             last_offset_time = now;
         }
 
@@ -480,7 +596,8 @@ where
                 nch as u32,
             )?;
         }
-        Writer::Parquet(_) => {
+        // every sample with its own time stamp
+        _ => {
             let mut parquet_ts = full_timestamps;
             let mut running_ts = parquet_ts[0];
             for ts in parquet_ts[1..].iter_mut() {
@@ -538,6 +655,13 @@ impl PullSample for i16 {
     fn pull_one(inlet: &StreamInlet, buf: &mut [Self], timeout: f64) -> anyhow::Result<f64> {
         inlet
             .pull_sample_i16(buf, timeout)
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+}
+impl PullSample for i8 {
+    fn pull_one(inlet: &StreamInlet, buf: &mut [Self], timeout: f64) -> anyhow::Result<f64> {
+        inlet
+            .pull_sample_i8(buf, timeout)
             .map_err(|e| anyhow::anyhow!(e))
     }
 }

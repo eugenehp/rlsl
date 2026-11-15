@@ -72,7 +72,7 @@ maturin develop -m crates/rlsl-py/Cargo.toml
 ## Rust API
 
 ```rust
-use lsl_core::prelude::*;
+use rlsl::prelude::*;
 
 // Create an outlet
 let info = StreamInfo::new("MyStream", "EEG", 8, 250.0, ChannelFormat::Float32, "src1");
@@ -81,6 +81,65 @@ let outlet = StreamOutlet::new(&info, 0, 360);
 // Push a sample
 outlet.push_sample_f(&[1.0; 8], 0.0, true);
 ```
+
+### Compatibility with liblsl
+
+rlsl speaks liblsl's protocol and is checked against liblsl 1.18 in both directions; what it
+adds — compressed feeds, replay for late consumers — is negotiated with headers a liblsl peer
+ignores. The C library (`rlsl-sys`) is a drop-in for liblsl and behaves like it.
+
+The Rust crate keeps three defaults of its own, for the sake of programs written against it:
+`local_clock()` counts from the start of the process, `time_correction()` returns the remote
+clock minus the local one, and `PROC_CLOCKSYNC` adds what the caller last measured. For liblsl's
+behaviour instead — the machine clock, liblsl's sign, automatic synchronisation — build with
+
+```toml
+rlsl = { version = "0.0.9", features = ["liblsl-defaults"] }
+```
+
+or choose each at run time (`LSL_CLOCK=system`, `clock_offset()`, `set_clock_sync(true)`).
+
+Where multicast does not get through (many Wi-Fi and institutional networks, anything across a
+router), name the other hosts, as with liblsl:
+
+```ini
+# lsl_api.cfg (or LSL_KNOWN_PEERS=recorder.lab,10.0.0.204)
+[lab]
+KnownPeers = {recorder.lab, 10.0.0.204}
+```
+
+### Optional: what a late consumer missed
+
+A stream that has just appeared sends its first samples before any recorder has found it. An
+outlet can keep its last seconds for consumers that ask (marker streams do by default):
+
+```rust
+outlet.set_history(10.0);        // keep 10 s (irregular streams: already the default)
+
+let inlet = StreamInlet::new(&info, 360, 0, true);
+inlet.set_replay(10.0);          // before open_stream: send me what I missed
+inlet.open_stream(10.0)?;
+```
+
+### Optional: compressed feeds
+
+With the cargo feature `compression` (off by default; it adds the `zstd` C library), an inlet
+can ask an rlsl outlet for a compressed feed — about 70 % of the bytes for an EEG stream, bit
+for bit the same values:
+
+```toml
+rlsl = { version = "0.0.9", features = ["compression"] }
+```
+
+```rust
+let inlet = StreamInlet::new(&info, 360, 0, true);
+inlet.set_compression(true);     // before open_stream / the first pull
+inlet.open_stream(10.0)?;
+println!("compressed: {}", inlet.is_compressed());
+```
+
+An outlet that cannot compress (liblsl, an older rlsl, a build without the feature) sends the
+plain protocol, and an inlet that does not ask gets exactly the bytes it always got.
 
 ## Python API
 

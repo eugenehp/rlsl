@@ -2,6 +2,7 @@
 //!
 //! Usage:
 //!   lsl-convert input.xdf --to parquet -o output_dir/
+//!   lsl-convert input.xdf --to parquet --compact -o output_dir/   (smaller files)
 //!   lsl-convert input_dir/ --to csv -o output.csv     (Parquet dir → CSV)
 //!   lsl-convert input.xdf --to csv -o output.csv
 //!   lsl-convert input.xdf --info                       (print stream info)
@@ -20,7 +21,7 @@ use std::sync::Arc;
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: lsl-convert <input> [--to parquet|csv|info] [-o output]");
+        eprintln!("Usage: lsl-convert <input> [--to parquet|csv|info] [--compact] [-o output]");
         std::process::exit(1);
     }
 
@@ -42,7 +43,11 @@ fn main() -> Result<()> {
     }
 
     match (input_type(input), format) {
-        (InputType::Xdf, "parquet") => xdf_to_parquet(input, output.unwrap_or("output_parquet"))?,
+        (InputType::Xdf, "parquet") => xdf_to_parquet(
+            input,
+            output.unwrap_or("output_parquet"),
+            args.iter().any(|a| a == "--compact"),
+        )?,
         (InputType::Xdf, "csv") => xdf_to_csv(input, output.unwrap_or("output.csv"))?,
         (InputType::Parquet, "csv") => parquet_to_csv(input, output.unwrap_or("output.csv"))?,
         _ => anyhow::bail!("Unsupported conversion: {} → {}", input, format),
@@ -350,7 +355,9 @@ fn xdf_info(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn xdf_to_parquet(input: &str, output_dir: &str) -> Result<()> {
+/// `compact`: encode integer, float32 and timestamp columns for size (standard Parquet
+/// encodings) instead of the default; off, the files are written as they always were.
+fn xdf_to_parquet(input: &str, output_dir: &str, compact: bool) -> Result<()> {
     let streams = parse_xdf(input)?;
     std::fs::create_dir_all(output_dir)?;
 
@@ -386,9 +393,28 @@ fn xdf_to_parquet(input: &str, output_dir: &str) -> Result<()> {
                 .collect::<String>()
         );
         let file = std::fs::File::create(&path)?;
-        let props = WriterProperties::builder()
+        // Encode each column for what it holds, where that beats Parquet's default: integers
+        // delta-packed, float32 values and the timestamp byte-stream-split (both standard
+        // encodings). double64 values and strings keep the default, which nothing beat.
+        let timestamp = parquet::schema::types::ColumnPath::from("timestamp");
+        let builder = WriterProperties::builder()
             .set_compression(Compression::ZSTD(Default::default()))
-            .build();
+            .set_column_dictionary_enabled(timestamp.clone(), false)
+            .set_column_encoding(timestamp, parquet::basic::Encoding::BYTE_STREAM_SPLIT);
+        let props = match (if compact { s.format.as_str() } else { "" }, &column_type) {
+            // not asked for: Parquet's defaults, as before
+            ("", _) => {
+                WriterProperties::builder().set_compression(Compression::ZSTD(Default::default()))
+            }
+            (_, DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64) => builder
+                .set_dictionary_enabled(false)
+                .set_encoding(parquet::basic::Encoding::DELTA_BINARY_PACKED),
+            ("float32", _) => builder
+                .set_dictionary_enabled(false)
+                .set_encoding(parquet::basic::Encoding::BYTE_STREAM_SPLIT),
+            _ => builder,
+        }
+        .build();
         let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props))?;
 
         let ts_arr = Float64Array::from(s.timestamps.clone());
@@ -670,7 +696,7 @@ mod tests {
         let input = dir.join("in.xdf");
         std::fs::write(&input, xdf).unwrap();
         let out = dir.join("out");
-        xdf_to_parquet(input.to_str().unwrap(), out.to_str().unwrap()).unwrap();
+        xdf_to_parquet(input.to_str().unwrap(), out.to_str().unwrap(), true).unwrap();
 
         let read = |name: &str| {
             let f = std::fs::File::open(out.join(name)).unwrap();

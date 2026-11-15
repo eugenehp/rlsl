@@ -107,9 +107,19 @@ jobs:
       - name: Unit tests (rlsl)
         run: cargo test -p rlsl --target ${{ matrix.target }}
 
+      - name: Unit tests (rlsl, liblsl defaults)
+        run: cargo test -p rlsl --features liblsl-defaults --target ${{ matrix.target }}
+
+      - name: Unit tests (rlsl, compression feature)
+        run: cargo test -p rlsl --features compression --target ${{ matrix.target }}
+
       - name: E2E tests (rlsl-rec)
         if: runner.os == 'Linux'
         run: cargo test -p rlsl-rec --target ${{ matrix.target }} -- --nocapture
+
+      - name: E2E tests (rlsl-rec, HDF5 feature)
+        if: runner.os == 'Linux'
+        run: cargo test -p rlsl-rec --features hdf5 --target ${{ matrix.target }} -- --nocapture
 
       - name: Check liblsl symbols
         shell: bash

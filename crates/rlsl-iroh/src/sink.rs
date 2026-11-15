@@ -120,6 +120,7 @@ async fn receive_compressed(
 ) -> Result<()> {
     let mut read_buf = vec![0u8; 8192];
     let mut leftover: Vec<u8> = Vec::new();
+    let mut decoder = compress::ChunkDecoder::new(compression, fmt.channel_bytes());
 
     loop {
         let n = recv.read(&mut read_buf).await?;
@@ -135,7 +136,7 @@ async fn receive_compressed(
 
                 let mut offset = 0;
                 while offset < data.len() {
-                    match compress::decompress_chunk(&data[offset..], compression) {
+                    match decoder.decompress(&data[offset..]) {
                         Some((decompressed, consumed)) => {
                             offset += consumed;
                             let _ = push_samples(&decompressed, outlet, fmt, nch)?;

@@ -329,6 +329,8 @@ async fn forward_stream(
     // write_all blocks on QUIC congestion, providing natural back-pressure.
     let mut raw_buf = Vec::with_capacity(1024);
     let mut compressed_buf = Vec::with_capacity(1024);
+    let mut encoder =
+        compress::ChunkEncoder::new(compression, info.channel_format().channel_bytes());
     let mut sent_count = 0u64;
 
     while let Some(sample) = sample_rx.recv().await {
@@ -344,7 +346,7 @@ async fn forward_stream(
             let _ = conn.send_datagram(bytes::Bytes::copy_from_slice(&raw_buf));
         } else if compression.is_compressed() {
             compressed_buf.clear();
-            compress::compress_chunk(&raw_buf, compression, &mut compressed_buf);
+            encoder.compress(&raw_buf, &mut compressed_buf);
             send.write_all(&compressed_buf).await?;
         } else {
             send.write_all(&raw_buf).await?;

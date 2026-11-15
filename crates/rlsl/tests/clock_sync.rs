@@ -1,13 +1,17 @@
 //! The clock and what is built on it. Everything behaves as it did by default — a per-process
 //! clock, `time_correction()` with its historical sign, a clock-sync flag that adds what the
-//! caller last estimated — and the liblsl-style behaviour is there for those who ask for it: the
-//! machine clock, `clock_offset()`, automatic clock synchronisation. Resolved streams can be
-//! reached.
+//! caller last estimated — and the liblsl behaviour is there for those who ask for it, one by
+//! one at run time (the machine clock, `clock_offset()`, automatic clock synchronisation) or
+//! all at once with the cargo feature `liblsl-defaults`, under which these tests expect
+//! liblsl's defaults instead. Resolved streams can be reached.
 
 use rlsl::prelude::*;
 use rlsl::types::{ChannelFormat, PROC_CLOCKSYNC};
 use std::net::UdpSocket;
 use std::time::{Duration, Instant};
+
+/// Built with liblsl's defaults rather than rlsl's own.
+const LIBLSL: bool = cfg!(feature = "liblsl-defaults");
 
 /// Run by the clock tests in a child process.
 #[test]
@@ -42,19 +46,31 @@ fn child_clocks(lsl_clock: Option<&str>) -> (f64, f64) {
     (values[0], values[1])
 }
 
-/// By default the clock is what it has always been: seconds since the process first asked.
+/// By default the clock is what it has always been: seconds since the process first asked
+/// (the machine's with `liblsl-defaults`). Either can be asked for, whatever the default.
 #[test]
 fn default_clock_counts_from_the_start_of_the_process() {
-    assert_eq!(
-        rlsl::clock::clock_source(),
+    let expected = if LIBLSL {
+        rlsl::clock::ClockSource::System
+    } else {
         rlsl::clock::ClockSource::Process
-    );
-    let (local, _) = child_clocks(None);
-    // the child read its clock for the first time just before printing it
-    assert!(
-        (0.0..1.0).contains(&local),
-        "a new process's clock reads {local}"
-    );
+    };
+    assert_eq!(rlsl::clock::clock_source(), expected);
+    for setting in [None, Some("process")] {
+        if LIBLSL && setting.is_none() {
+            continue;
+        }
+        let (local, _) = child_clocks(setting);
+        // the child read its clock for the first time just before printing it
+        assert!(
+            (0.0..1.0).contains(&local),
+            "{setting:?}: a new process's clock reads {local}"
+        );
+    }
+    if LIBLSL {
+        let (local, system) = child_clocks(None);
+        assert!((local - system).abs() < 0.01, "{local} vs {system}");
+    }
     let t1 = rlsl::clock::local_clock();
     std::thread::sleep(Duration::from_millis(20));
     assert!(rlsl::clock::local_clock() > t1);
@@ -65,7 +81,7 @@ fn default_clock_counts_from_the_start_of_the_process() {
 #[test]
 fn system_clock_is_shared_between_processes() {
     let before = rlsl::clock::system_clock();
-    let (default_local, system) = child_clocks(None);
+    let (default_local, system) = child_clocks(Some("process"));
     let (opted_local, opted_system) = child_clocks(Some("system"));
     let after = rlsl::clock::system_clock();
     assert!(after > before);
@@ -80,7 +96,7 @@ fn system_clock_is_shared_between_processes() {
             "{before} <= {opted_local} <= {after}"
         );
         assert!((opted_system - opted_local).abs() < 0.01);
-        // without it, it is not
+        // with the other, it is not
         assert!((default_local - system).abs() > 1.0 || system < 2.0);
     }
 }
@@ -113,14 +129,15 @@ fn fake_time_service(ahead: f64) -> u16 {
 
 /// For a remote clock that is 100 s ahead, `time_correction` reports +100 as it always has
 /// (remote minus local) and `clock_offset` reports -100: what to add to the remote stamps, as
-/// liblsl defines it.
+/// liblsl defines it. With `liblsl-defaults`, `time_correction` is liblsl's too.
 #[test]
 fn time_correction_keeps_its_sign_and_clock_offset_has_liblsl_s() {
     for ahead in [100.0, -250.0] {
         let port = fake_time_service(ahead);
         let tc = rlsl::time_receiver::time_correction("127.0.0.1", port, 2.0);
+        let expected = if LIBLSL { -ahead } else { ahead };
         assert!(
-            (tc - ahead).abs() < 0.05,
+            (tc - expected).abs() < 0.05,
             "remote ahead by {ahead}: time_correction {tc}"
         );
         let offset = rlsl::time_receiver::clock_offset("127.0.0.1", port, 2.0).expect("an answer");
@@ -131,7 +148,7 @@ fn time_correction_keeps_its_sign_and_clock_offset_has_liblsl_s() {
         let remote_stamp = rlsl::clock::local_clock() + ahead;
         assert!((remote_stamp + offset - rlsl::clock::local_clock()).abs() < 0.05);
     }
-    // nobody there: 0 from the old call, `None` from the new one
+    // nobody there: 0 from the one, `None` from the other
     let silent = UdpSocket::bind("127.0.0.1:0").unwrap();
     let port = silent.local_addr().unwrap().port();
     assert_eq!(
@@ -170,11 +187,15 @@ fn inlet_with_remote_clock(name: &str, ahead: f64) -> (StreamOutlet, StreamInlet
 }
 
 /// Unchanged: the clock-sync flag adds what the last `time_correction()` call found, and
-/// nothing when there was no such call.
+/// nothing when there was no such call. (With `liblsl-defaults` the inlet synchronises by
+/// itself unless told not to, as here.)
 #[test]
 fn clocksync_flag_alone_behaves_as_before() {
     const AHEAD: f64 = 100.0;
     let (outlet, inlet) = inlet_with_remote_clock("rlsl-test-clocksync-manual", AHEAD);
+    if LIBLSL {
+        inlet.set_clock_sync(false);
+    }
     let mut buf = [0f32; 1];
 
     let stamp = rlsl::clock::local_clock() + AHEAD;
@@ -186,7 +207,8 @@ fn clocksync_flag_alone_behaves_as_before() {
     );
 
     let tc = inlet.time_correction(2.0);
-    assert!((tc - AHEAD).abs() < 0.05, "{tc}");
+    let expected = if LIBLSL { -AHEAD } else { AHEAD };
+    assert!((tc - expected).abs() < 0.05, "{tc}");
     let stamp = rlsl::clock::local_clock() + AHEAD;
     outlet.push_sample_f(&[2.0], stamp, true);
     let ts = inlet.pull_sample_f(&mut buf, 5.0).unwrap();
@@ -196,13 +218,16 @@ fn clocksync_flag_alone_behaves_as_before() {
     );
 }
 
-/// Opted in, an inlet delivers local-clock time stamps without the caller ever estimating
-/// anything: samples stamped by an outlet whose clock is 100 s ahead come out at about "now".
+/// Opted in (or by default with `liblsl-defaults`), an inlet delivers local-clock time stamps
+/// without the caller ever estimating anything: samples stamped by an outlet whose clock is
+/// 100 s ahead come out at about "now".
 #[test]
 fn automatic_clock_sync_gives_local_time_stamps() {
     const AHEAD: f64 = 100.0;
     let (outlet, inlet) = inlet_with_remote_clock("rlsl-test-clocksync-auto", AHEAD);
-    inlet.set_clock_sync(true);
+    if !LIBLSL {
+        inlet.set_clock_sync(true);
+    }
 
     let mut buf = [0f32; 1];
     for k in 0..3 {
@@ -250,4 +275,47 @@ fn resolved_streams_carry_a_reachable_address() {
             .open_stream(5.0)
             .unwrap_or_else(|e| panic!("round {round}: {e}"));
     }
+}
+
+/// The local clock on the Unix timeline: right now, and kept current as the two drift apart.
+#[test]
+fn unix_offset_follows_the_wall_clock_smoothly() {
+    use rlsl::clock::{local_clock, unix_offset_now, UnixOffset};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    // now: local clock plus the offset is the wall clock
+    let unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64();
+    assert!((local_clock() + unix_offset_now() - unix).abs() < 0.05);
+    let mut live = UnixOffset::new();
+    assert!((live.unix_time(local_clock()) - unix).abs() < 0.05);
+
+    // an hour of 15 ppm between the clocks, asked 50 times a second
+    let t0 = Instant::now();
+    let mut kept = UnixOffset::starting_at(1000.0, t0);
+    let truth = |s: f64| 1000.0 + 15e-6 * s;
+    let (mut prev, mut step, mut worst) = (1000.0, 0.0f64, 0.0f64);
+    for k in 1..=3600 * 50 {
+        let s = f64::from(k) / 50.0;
+        let got = kept.offset_at(t0 + Duration::from_secs_f64(s), || truth(s));
+        step = step.max((got - prev).abs());
+        worst = worst.max((got - truth(s)).abs());
+        prev = got;
+    }
+    assert!(worst < 0.0002, "off by {} ms", worst * 1e3);
+    assert!(
+        step <= 0.02 * UnixOffset::SLEW_PER_S + 1e-12,
+        "a step of {} us",
+        step * 1e6
+    );
+    assert!((prev - 1000.054).abs() < 0.0002);
+
+    // a bad reading moves it by no more than the slew allows before the next one
+    let glitch = kept.offset_at(t0 + Duration::from_secs(3605), || truth(3600.0) + 0.05);
+    assert!((glitch - prev).abs() < 0.003);
+    // the wall clock set an hour ahead: followed at once
+    let set = kept.offset_at(t0 + Duration::from_secs(3610), || truth(3600.0) + 3600.0);
+    assert!((set - truth(3600.0) - 3600.0).abs() < 1e-6);
 }

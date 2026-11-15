@@ -22,28 +22,31 @@ impl UdpServer {
     /// Binds on both IPv4 and IPv6. Returns (v4_port, v6_port).
     pub fn start_unicast(info: StreamInfo, shutdown: Arc<AtomicBool>) -> (u16, u16) {
         // --- IPv4 unicast ---
-        let v4_port = {
-            let socket = crate::RUNTIME.block_on(async {
-                UdpSocket::bind("0.0.0.0:0")
-                    .await
-                    .expect("Failed to bind UDPv4 service socket")
-            });
-            let port = socket.local_addr().unwrap().port();
-            let shortinfo = info.to_shortinfo_message();
-            let info_clone = info.clone();
-            let shutdown = shutdown.clone();
+        let v4_port = match crate::RUNTIME.block_on(bind_service(IpAddr::V4(Ipv4Addr::UNSPECIFIED)))
+        {
+            Ok(socket) => {
+                let port = socket.local_addr().map_or(0, |a| a.port());
+                let shortinfo = info.to_shortinfo_message();
+                let info_clone = info.clone();
+                let shutdown = shutdown.clone();
 
-            crate::RUNTIME.spawn(async move {
-                run_unicast_loop(socket, &info_clone, &shortinfo, &shutdown).await;
-            });
-            port
+                crate::RUNTIME.spawn(async move {
+                    run_unicast_loop(socket, &info_clone, &shortinfo, &shutdown).await;
+                });
+                port
+            }
+            Err(e) => {
+                // no IPv4, or every allowed port taken: no IPv4 service, not a crash
+                log::error!("no IPv4 service port for the outlet: {e}");
+                0
+            }
         };
 
         // --- IPv6 unicast ---
         let v6_port = if CONFIG.allow_ipv6 {
-            match crate::RUNTIME.block_on(async { UdpSocket::bind("[::]:0").await }) {
+            match crate::RUNTIME.block_on(bind_service(IpAddr::V6(Ipv6Addr::UNSPECIFIED))) {
                 Ok(socket) => {
-                    let port = socket.local_addr().unwrap().port();
+                    let port = socket.local_addr().map_or(0, |a| a.port());
                     let shortinfo = info.to_shortinfo_message();
                     let info_clone = info.clone();
                     let shutdown = shutdown.clone();
@@ -120,6 +123,20 @@ impl UdpServer {
 
 // ── Shared unicast handler loop ──────────────────────────────────────
 
+/// Bind the service socket where liblsl binds its own: on the first free port of the LSL range,
+/// so that a peer that knows this host only by name (`KnownPeers`) finds the stream by asking
+/// those ports, and a firewall can be opened for them; any free port when the range is taken.
+async fn bind_service(ip: IpAddr) -> std::io::Result<UdpSocket> {
+    let mut last = std::io::Error::other("no service port to try");
+    for port in crate::config::service_ports() {
+        match UdpSocket::bind(SocketAddr::new(ip, port)).await {
+            Ok(socket) => return Ok(socket),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 async fn run_unicast_loop(
     socket: UdpSocket,
     info: &StreamInfo,
@@ -146,7 +163,11 @@ async fn run_unicast_loop(
                         let query_id = parts.get(1).unwrap_or(&"").to_string();
 
                         if info.matches_query(&query) {
-                            let reply = format!("{}\r\n{}", query_id, shortinfo);
+                            // The description as it is now, not as it was when this
+                            // responder was started: the service ports are only known once
+                            // every socket is bound, which is after that.
+                            let _ = shortinfo;
+                            let reply = format!("{}\r\n{}", query_id, info.to_shortinfo_message());
                             let return_addr = SocketAddr::new(addr.ip(), return_port);
                             let _ = socket.send_to(reply.as_bytes(), return_addr).await;
                         }

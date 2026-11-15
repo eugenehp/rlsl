@@ -9,6 +9,8 @@
 //! * [`xml_dom`] — mutable XML tree for `<desc>` metadata
 
 pub mod clock;
+#[cfg(feature = "compression")]
+pub mod compress;
 pub mod config;
 pub mod inlet;
 pub mod outlet;
@@ -169,8 +171,21 @@ mod tests {
         let mut buf = Vec::new();
         sample.serialize_100(&mut buf);
 
-        // Protocol 1.00: 8 bytes timestamp + 4*4 bytes data = 24 bytes
-        assert_eq!(buf.len(), 8 + 16);
+        // Protocol 1.00, as liblsl writes it: the tag (1 + 1 bytes), the time stamp (1 + 8) and
+        // four floats (1 + 4 each, the size byte first)
+        assert_eq!(buf.len(), 2 + 9 + 4 * 5);
+        // the test pattern liblsl 1.18 sends first on a two-channel float32 stream
+        let mut pattern = Sample::new(fmt, 2, 0.0);
+        pattern.assign_test_pattern(4);
+        let mut bytes = Vec::new();
+        pattern.serialize_100(&mut bytes);
+        assert_eq!(
+            bytes,
+            [
+                0x01, 0x02, 0x08, 0xc9, 0x76, 0xbe, 0x9f, 0x0c, 0x24, 0xfe, 0x40, 0x04, 0x00, 0x00,
+                0x80, 0x40, 0x04, 0x00, 0x00, 0xa0, 0xc0
+            ]
+        );
 
         // Deserialize
         let mut cursor = Cursor::new(&buf);

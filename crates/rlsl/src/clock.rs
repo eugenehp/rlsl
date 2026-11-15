@@ -2,16 +2,18 @@
 //!
 //! [`local_clock`] has two possible sources:
 //!
-//! * [`ClockSource::Process`] (the default, and the only behaviour up to 0.0.7): seconds since
-//!   this process first asked. Monotonic, but every process has its own zero, so time stamps of
-//!   two programs on one machine differ by the difference of their start times.
+//! * [`ClockSource::Process`] (the default, as in every release): seconds since this process
+//!   first asked. Monotonic, but every process has its own zero, so time stamps of two programs
+//!   on one machine differ by the difference of their start times.
 //! * [`ClockSource::System`]: the machine's monotonic clock, which every process reads alike —
-//!   what liblsl's `steady_clock` is. Time stamps of programs on one machine are then directly
-//!   comparable and the clock offset between them is zero.
+//!   liblsl's `steady_clock`. Time stamps of programs on one machine, rlsl or liblsl, are then
+//!   directly comparable and the clock offset between them is zero.
 //!
-//! The source is chosen once, before the clock is first used: with [`set_clock_source`], or with
-//! `clock = system` in `lsl_api.cfg` / the `LSL_CLOCK=system` environment variable.
-//! [`system_clock`] reads the machine clock whatever the source.
+//! The source is chosen once, before the clock is first used: with [`set_clock_source`], with
+//! `clock = system` (or `process`) in `lsl_api.cfg` / the `LSL_CLOCK` environment variable, or —
+//! for a program that wants liblsl's behaviour throughout — by building with the cargo feature
+//! `liblsl-defaults`, which makes the machine clock the default. [`system_clock`] reads the
+//! machine clock whatever the source.
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -20,7 +22,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub enum ClockSource {
     /// Seconds since this process first read the clock (the default).
     Process,
-    /// The machine's monotonic clock, shared by all processes.
+    /// The machine's monotonic clock, shared by all processes, as in liblsl (the default with
+    /// the `liblsl-defaults` feature).
     System,
 }
 
@@ -79,6 +82,106 @@ pub fn local_clock() -> f64 {
 /// clock.
 pub fn system_clock() -> f64 {
     imp::now()
+}
+
+/// What to add to a [`local_clock`] time to get Unix time (seconds since 1970), as the two
+/// clocks stand right now. The two are read as close together as possible, several times, and
+/// the tightest reading is kept.
+///
+/// This is not a constant. `local_clock()` is monotonic and Unix time is the wall clock, which
+/// the system keeps in step with a time server by running it slightly fast or slow: over an hour
+/// the two drift apart by tens of milliseconds (54 ms on one measured machine). A program that
+/// records LSL time stamps as wall-clock time should therefore not take this once and keep it;
+/// see [`UnixOffset`].
+pub fn unix_offset_now() -> f64 {
+    let unix = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64())
+    };
+    (0..5)
+        .map(|_| {
+            let (a, lsl, b) = (unix(), local_clock(), unix());
+            (b - a, (a + b) / 2.0 - lsl)
+        })
+        .min_by(|x, y| x.0.total_cmp(&y.0))
+        .map_or(0.0, |(_, offset)| offset)
+}
+
+/// [`unix_offset_now`], kept current: measured again every few seconds and followed at a
+/// limited rate, so that time stamps mapped with it stay evenly spaced while they keep to the
+/// wall clock. A wall clock that is *set* (a change of more than a second) is followed at once.
+///
+/// ```
+/// let mut to_unix = rlsl::clock::UnixOffset::new();
+/// let stamp = rlsl::clock::local_clock(); // or a sample's time stamp on the local clock
+/// let unix_seconds = stamp + to_unix.offset();
+/// # assert!(unix_seconds > 1.0e9);
+/// ```
+#[derive(Debug, Clone)]
+pub struct UnixOffset {
+    offset: f64,
+    target: f64,
+    measured: std::time::Instant,
+    updated: std::time::Instant,
+}
+
+impl UnixOffset {
+    /// How often the two clocks are compared.
+    pub const REMEASURE: std::time::Duration = std::time::Duration::from_secs(5);
+    /// The fastest the offset follows a change: 500 ppm, the most a disciplined wall clock is
+    /// slewed.
+    pub const SLEW_PER_S: f64 = 500e-6;
+    /// A change this large (seconds) is the wall clock being set, not drifting.
+    pub const STEP_S: f64 = 1.0;
+
+    pub fn new() -> Self {
+        Self::starting_at(unix_offset_now(), std::time::Instant::now())
+    }
+
+    /// With a given first offset and starting moment (for tests and replays).
+    pub fn starting_at(offset: f64, now: std::time::Instant) -> Self {
+        Self {
+            offset,
+            target: offset,
+            measured: now,
+            updated: now,
+        }
+    }
+
+    /// What to add to a time on this process's [`local_clock`] to get Unix time.
+    pub fn offset(&mut self) -> f64 {
+        self.offset_at(std::time::Instant::now(), unix_offset_now)
+    }
+
+    /// [`offset`](Self::offset) at `now`, with `measure` comparing the clocks.
+    pub fn offset_at(&mut self, now: std::time::Instant, measure: impl FnOnce() -> f64) -> f64 {
+        if now.saturating_duration_since(self.measured) >= Self::REMEASURE {
+            self.measured = now;
+            self.target = measure();
+        }
+        let dt = now.saturating_duration_since(self.updated).as_secs_f64();
+        self.updated = now;
+        let behind = self.target - self.offset;
+        if behind.abs() > Self::STEP_S {
+            self.offset = self.target;
+        } else {
+            let step = Self::SLEW_PER_S * dt;
+            self.offset += behind.clamp(-step, step);
+        }
+        self.offset
+    }
+
+    /// A [`local_clock`] time as Unix time.
+    pub fn unix_time(&mut self, local_time: f64) -> f64 {
+        local_time + self.offset()
+    }
+}
+
+impl Default for UnixOffset {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(unix)]

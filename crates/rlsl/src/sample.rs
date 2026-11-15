@@ -579,6 +579,33 @@ impl Sample {
     }
 
     /// Serialize a sample to bytes (protocol 1.10, little-endian, no byte-order swap).
+    /// This sample with its subnormal numbers (nonzero, but smaller than the smallest normal
+    /// float) replaced by zero, for a consumer whose machine has none — or `None` when there
+    /// is nothing to replace, which is nearly always.
+    pub fn without_subnormals(&self) -> Option<Sample> {
+        let subnormal = match &self.data {
+            SampleData::Float32(v) => v.iter().any(|x| x.is_subnormal()),
+            SampleData::Double64(v) => v.iter().any(|x| x.is_subnormal()),
+            _ => false,
+        };
+        if !subnormal {
+            return None;
+        }
+        let mut flushed = self.clone();
+        match &mut flushed.data {
+            SampleData::Float32(v) => v
+                .iter_mut()
+                .filter(|x| x.is_subnormal())
+                .for_each(|x| *x = 0.0),
+            SampleData::Double64(v) => v
+                .iter_mut()
+                .filter(|x| x.is_subnormal())
+                .for_each(|x| *x = 0.0),
+            _ => {}
+        }
+        Some(flushed)
+    }
+
     pub fn serialize_110(&self, buf: &mut Vec<u8>) {
         if self.timestamp == DEDUCED_TIMESTAMP {
             buf.push(TAG_DEDUCED_TIMESTAMP);
@@ -729,114 +756,83 @@ impl Sample {
         })
     }
 
-    /// Serialize a sample to bytes (protocol 1.00).
-    /// Protocol 1.00: every sample has an 8-byte timestamp (no tag byte),
-    /// strings use 4-byte length prefix.
+    /// Serialize the sample in protocol 1.00: liblsl's "portable archive" form, in which every
+    /// number is written as a size byte and that many little-endian bytes (zero as a single
+    /// zero byte, a negative integer with a negative size), floats as their IEEE 754 bits, and
+    /// strings as a length and their bytes. Checked byte for byte against liblsl 1.18 set to
+    /// protocol 100. (Up to 0.0.8 this wrote a form of rlsl's own that no liblsl could read.)
     pub fn serialize_100(&self, buf: &mut Vec<u8>) {
-        // Always write the full 8-byte timestamp
-        buf.extend_from_slice(&self.timestamp.to_le_bytes());
-
+        if self.timestamp == DEDUCED_TIMESTAMP {
+            portable::put_uint(buf, u64::from(TAG_DEDUCED_TIMESTAMP));
+        } else {
+            portable::put_uint(buf, u64::from(TAG_TRANSMITTED_TIMESTAMP));
+            portable::put_uint(buf, self.timestamp.to_bits());
+        }
         match &self.data {
+            SampleData::Float32(v) => v
+                .iter()
+                .for_each(|x| portable::put_uint(buf, u64::from(x.to_bits()))),
+            SampleData::Double64(v) => v.iter().for_each(|x| portable::put_uint(buf, x.to_bits())),
+            SampleData::Int8(v) => v.iter().for_each(|x| portable::put_int(buf, i64::from(*x))),
+            SampleData::Int16(v) => v.iter().for_each(|x| portable::put_int(buf, i64::from(*x))),
+            SampleData::Int32(v) => v.iter().for_each(|x| portable::put_int(buf, i64::from(*x))),
+            SampleData::Int64(v) => v.iter().for_each(|x| portable::put_int(buf, *x)),
             SampleData::StringData(strings) => {
                 for s in strings {
-                    let len = s.len() as u32;
-                    buf.extend_from_slice(&len.to_le_bytes());
+                    portable::put_uint(buf, s.len() as u64);
                     buf.extend_from_slice(s.as_bytes());
                 }
-            }
-            _ => {
-                buf.extend_from_slice(&self.retrieve_raw());
             }
         }
     }
 
-    /// Deserialize a sample from a reader (protocol 1.00).
+    /// Deserialize a sample from a reader (protocol 1.00, see [`serialize_100`](Self::serialize_100)).
     pub fn deserialize_100<R: Read>(
         reader: &mut R,
         fmt: ChannelFormat,
         num_channels: u32,
     ) -> IoResult<Sample> {
-        // Always read 8-byte timestamp
-        let mut ts_bytes = [0u8; 8];
-        reader.read_exact(&mut ts_bytes)?;
-        let timestamp = f64::from_le_bytes(ts_bytes);
-
+        let tag = portable::get_int(reader)?;
+        let timestamp = if tag == i64::from(TAG_DEDUCED_TIMESTAMP) {
+            DEDUCED_TIMESTAMP
+        } else {
+            f64::from_bits(portable::get_int(reader)? as u64)
+        };
         let n = num_channels as usize;
+        let ints = |reader: &mut R| -> IoResult<Vec<i64>> {
+            (0..n).map(|_| portable::get_int(reader)).collect()
+        };
         let data = match fmt {
-            ChannelFormat::Float32 => {
-                let mut raw = vec![0u8; n * 4];
-                reader.read_exact(&mut raw)?;
-                SampleData::Float32(
-                    raw.as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|c| f32::from_le_bytes(*c))
-                        .collect(),
-                )
-            }
-            ChannelFormat::Double64 => {
-                let mut raw = vec![0u8; n * 8];
-                reader.read_exact(&mut raw)?;
-                SampleData::Double64(
-                    raw.as_chunks::<8>()
-                        .0
-                        .iter()
-                        .map(|c| f64::from_le_bytes(*c))
-                        .collect(),
-                )
-            }
-            ChannelFormat::Int32 => {
-                let mut raw = vec![0u8; n * 4];
-                reader.read_exact(&mut raw)?;
-                SampleData::Int32(
-                    raw.as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|c| i32::from_le_bytes(*c))
-                        .collect(),
-                )
+            ChannelFormat::Float32 => SampleData::Float32(
+                ints(reader)?
+                    .into_iter()
+                    .map(|b| f32::from_bits(b as u32))
+                    .collect(),
+            ),
+            ChannelFormat::Double64 => SampleData::Double64(
+                ints(reader)?
+                    .into_iter()
+                    .map(|b| f64::from_bits(b as u64))
+                    .collect(),
+            ),
+            ChannelFormat::Int8 => {
+                SampleData::Int8(ints(reader)?.into_iter().map(|v| v as i8).collect())
             }
             ChannelFormat::Int16 => {
-                let mut raw = vec![0u8; n * 2];
-                reader.read_exact(&mut raw)?;
-                SampleData::Int16(
-                    raw.as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|c| i16::from_le_bytes(*c))
-                        .collect(),
-                )
+                SampleData::Int16(ints(reader)?.into_iter().map(|v| v as i16).collect())
             }
-            ChannelFormat::Int8 => {
-                let mut raw = vec![0u8; n];
-                reader.read_exact(&mut raw)?;
-                SampleData::Int8(raw.into_iter().map(|b| b as i8).collect())
+            ChannelFormat::Int32 => {
+                SampleData::Int32(ints(reader)?.into_iter().map(|v| v as i32).collect())
             }
-            ChannelFormat::Int64 => {
-                let mut raw = vec![0u8; n * 8];
-                reader.read_exact(&mut raw)?;
-                SampleData::Int64(
-                    raw.as_chunks::<8>()
-                        .0
-                        .iter()
-                        .map(|c| i64::from_le_bytes(*c))
-                        .collect(),
-                )
-            }
-            ChannelFormat::String | ChannelFormat::Undefined => {
+            ChannelFormat::Int64 => SampleData::Int64(ints(reader)?),
+            _ => {
                 let mut strings = Vec::with_capacity(n);
                 for _ in 0..n {
-                    let mut len_bytes = [0u8; 4];
-                    reader.read_exact(&mut len_bytes)?;
-                    let len = u32::from_le_bytes(len_bytes) as usize;
-                    let mut sbuf = vec![0u8; len];
-                    reader.read_exact(&mut sbuf)?;
-                    strings.push(String::from_utf8_lossy(&sbuf).into_owned());
+                    strings.push(portable::get_string(reader)?);
                 }
                 SampleData::StringData(strings)
             }
         };
-
         Ok(Sample {
             timestamp,
             pushthrough: true,
@@ -933,6 +929,150 @@ impl PartialEq for Sample {
             (SampleData::Int64(a), SampleData::Int64(b)) => a == b,
             (SampleData::StringData(a), SampleData::StringData(b)) => a == b,
             _ => false,
+        }
+    }
+}
+
+/// liblsl's "portable binary archive" (protocol 1.00): the pieces of it a stream feed uses.
+pub mod portable {
+    use std::io::{Error, ErrorKind, Read, Result};
+
+    /// The start of an archive: the magic byte, and the archive version (9) as a number.
+    pub const HEADER: [u8; 3] = [0x7f, 0x01, 0x09];
+    /// What precedes the first sample of a feed: its class information (not tracked, version 0).
+    pub const SAMPLE_CLASS_INFO: [u8; 2] = [0, 0];
+    /// The longest string a feed is trusted to announce.
+    const MAX_STRING: u64 = 64 << 20;
+
+    /// An unsigned number: zero as one zero byte, else the count of its significant bytes and
+    /// those bytes, least significant first.
+    pub fn put_uint(buf: &mut Vec<u8>, value: u64) {
+        if value == 0 {
+            buf.push(0);
+            return;
+        }
+        let size = (8 - value.leading_zeros() as usize / 8).max(1);
+        buf.push(size as u8);
+        buf.extend_from_slice(&value.to_le_bytes()[..size]);
+    }
+
+    /// A signed number: as [`put_uint`] when positive; when negative, the size is negative
+    /// too and the bytes dropped are the all-ones ones.
+    pub fn put_int(buf: &mut Vec<u8>, value: i64) {
+        if value >= 0 {
+            return put_uint(buf, value as u64);
+        }
+        // as liblsl counts: shift a byte at a time until nothing but the sign is left
+        let (mut rest, mut size) = (value, 0i8);
+        loop {
+            rest >>= 8;
+            size += 1;
+            if rest == -1 || rest == 0 {
+                break;
+            }
+        }
+        buf.push((-size) as u8);
+        buf.extend_from_slice(&value.to_le_bytes()[..size as usize]);
+    }
+
+    /// A number as [`put_int`] / [`put_uint`] wrote it (an unsigned one comes back as its bits).
+    pub fn get_int<R: Read>(reader: &mut R) -> Result<i64> {
+        let mut size = [0u8; 1];
+        reader.read_exact(&mut size)?;
+        let size = size[0] as i8;
+        if size == 0 {
+            return Ok(0);
+        }
+        let n = size.unsigned_abs() as usize;
+        if n > 8 {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "a number of more than 8 bytes",
+            ));
+        }
+        let mut bytes = if size < 0 { [0xffu8; 8] } else { [0u8; 8] };
+        reader.read_exact(&mut bytes[..n])?;
+        Ok(i64::from_le_bytes(bytes))
+    }
+
+    /// A string: its length, then its bytes.
+    pub fn put_string(buf: &mut Vec<u8>, s: &str) {
+        put_uint(buf, s.len() as u64);
+        buf.extend_from_slice(s.as_bytes());
+    }
+
+    pub fn get_string<R: Read>(reader: &mut R) -> Result<String> {
+        let len = get_int(reader)? as u64;
+        if len > MAX_STRING {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "an impossibly long string",
+            ));
+        }
+        let mut bytes = vec![0u8; len as usize];
+        reader.read_exact(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// The bytes liblsl 1.18 (set to protocol 100) put on the wire, sample by sample.
+        #[test]
+        fn numbers_are_written_as_liblsl_writes_them() {
+            let bytes = |f: &dyn Fn(&mut Vec<u8>)| {
+                let mut b = Vec::new();
+                f(&mut b);
+                b
+            };
+            let int = |v: i64| bytes(&|b| put_int(b, v));
+            let bits = |v: u64| bytes(&|b| put_uint(b, v));
+            assert_eq!(int(0), [0x00]);
+            assert_eq!(int(5), [0x01, 0x05]);
+            assert_eq!(int(-6), [0xff, 0xfa]);
+            assert_eq!(int(127), [0x01, 0x7f]);
+            assert_eq!(int(300), [0x02, 0x2c, 0x01]);
+            assert_eq!(int(-300), [0xfe, 0xd4, 0xfe]);
+            assert_eq!(int(32767), [0x02, 0xff, 0x7f]);
+            assert_eq!(int(1 << 40), [0x06, 0, 0, 0, 0, 0, 1]);
+            assert_eq!(int(-(1 << 40)), [0xfb, 0, 0, 0, 0, 0]);
+            // floats, as their bits: 1.0f32, -2.5f32, 0.001f32, 0.0, and the test pattern's time
+            assert_eq!(
+                bits(u64::from(1.0f32.to_bits())),
+                [0x04, 0x00, 0x00, 0x80, 0x3f]
+            );
+            assert_eq!(
+                bits(u64::from((-2.5f32).to_bits())),
+                [0x04, 0x00, 0x00, 0x20, 0xc0]
+            );
+            assert_eq!(
+                bits(u64::from(0.001f32.to_bits())),
+                [0x04, 0x6f, 0x12, 0x83, 0x3a]
+            );
+            assert_eq!(bits(0.0f64.to_bits()), [0x00]);
+            assert_eq!(
+                bits(123456.789f64.to_bits()),
+                [0x08, 0xc9, 0x76, 0xbe, 0x9f, 0x0c, 0x24, 0xfe, 0x40]
+            );
+            for v in [
+                0i64,
+                1,
+                -1,
+                255,
+                256,
+                -129,
+                -32768,
+                i64::MAX,
+                i64::MIN,
+                (1 << 53) + 1,
+            ] {
+                assert_eq!(get_int(&mut &int(v)[..]).unwrap(), v, "{v}");
+            }
+            let s = bytes(&|b| put_string(b, &"x".repeat(300)));
+            assert_eq!(s[..3], [0x02, 0x2c, 0x01]);
+            assert_eq!(get_string(&mut &s[..]).unwrap().len(), 300);
+            assert_eq!(bytes(&|b| put_string(b, "")), [0x00]);
         }
     }
 }

@@ -110,6 +110,11 @@ impl App {
     fn toggle_format(&mut self) {
         self.format = match self.format {
             RecordingFormat::Xdf => RecordingFormat::Parquet,
+            #[cfg(feature = "hdf5")]
+            RecordingFormat::Parquet => RecordingFormat::Hdf5,
+            #[cfg(feature = "hdf5")]
+            RecordingFormat::Hdf5 => RecordingFormat::Xdf,
+            #[cfg(not(feature = "hdf5"))]
             RecordingFormat::Parquet => RecordingFormat::Xdf,
         };
         self.status_msg = format!("Format: {} — press Enter to record", self.format.as_str());
@@ -140,6 +145,8 @@ impl App {
         let filename = match self.format {
             RecordingFormat::Xdf => format!("recording_{}.xdf", stamp),
             RecordingFormat::Parquet => format!("recording_{}_parquet", stamp),
+            #[cfg(feature = "hdf5")]
+            RecordingFormat::Hdf5 => format!("recording_{}.h5", stamp),
         };
         match Recording::start_with_format(&filename, &selected, self.format) {
             Ok(rec) => {

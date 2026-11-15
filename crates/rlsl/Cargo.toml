@@ -20,6 +20,20 @@ hostname.workspace = true
 fxhash.workspace = true
 log.workspace = true
 
+# Stream compression between rlsl inlets and outlets (see `compress`). Off by default: the
+# core then has no C dependency and behaves on the wire exactly as before.
+zstd = { version = "0.14", optional = true }
+
+[features]
+default = []
+compression = ["dep:zstd"]
+# liblsl's behaviour where rlsl's own has differed since its first release: `local_clock()` is
+# the machine clock, `time_correction()` has liblsl's sign, and `PROC_CLOCKSYNC` synchronises by
+# itself. Off by default, so that existing programs behave as they always have; each of the
+# three can also be chosen at run time (see the `clock` module and `StreamInlet`). The C
+# library (`rlsl-sys`, the liblsl drop-in) behaves like liblsl without this feature.
+liblsl-defaults = []
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

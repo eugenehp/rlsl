@@ -20,13 +20,28 @@ pub struct ApiConfig {
     pub allow_ipv4: bool,
     pub allow_ipv6: bool,
     pub multicast_addresses: Vec<IpAddr>,
+    /// liblsl's `KnownPeers`: hosts (names or addresses) that are asked for their streams
+    /// directly, one by one — for networks where multicast and broadcast do not get through
+    /// (many Wi-Fi and institutional networks, anything across a router). `known_peers = {a, b}`
+    /// in `lsl_api.cfg`, or `LSL_KNOWN_PEERS=a,b`. More can be added while running with
+    /// [`crate::resolver::add_known_peer`].
+    pub known_peers: Vec<String>,
     pub multicast_ttl: u32,
     pub session_id: String,
     pub use_protocol_version: i32,
     pub smoothing_halftime: f32,
-    /// `clock = system`: [`local_clock`](crate::clock::local_clock) reads the machine clock
-    /// instead of counting from the start of the process.
+    /// Whether [`local_clock`](crate::clock::local_clock) reads the machine clock rather than
+    /// counting from the start of the process: `clock = system` / `clock = process`, else the
+    /// build's default (process; system with the `liblsl-defaults` feature).
     pub system_clock: bool,
+    /// What `clock =` said, when it said anything.
+    pub clock_setting: Option<bool>,
+    /// `compression = stream-zstd`: inlets ask outlets to compress the data they send (needs the
+    /// `compression` feature on both ends; anything else gets the plain protocol).
+    pub compression: String,
+    /// `replay = <seconds>`: inlets ask outlets for this much of what they sent before the inlet
+    /// connected ([`crate::inlet::StreamInlet::set_replay`]). 0 (the default): nothing.
+    pub replay: f64,
     pub time_update_interval: f64,
     pub time_probe_count: i32,
     pub time_probe_interval: f64,
@@ -90,6 +105,13 @@ impl ApiConfig {
             addrs
         };
 
+        let clock_setting =
+            get("clock").and_then(|v| match v.trim().to_ascii_lowercase().as_str() {
+                "system" => Some(true),
+                "process" => Some(false),
+                _ => None,
+            });
+
         Self {
             multicast_port: get_u16("multicast_port", 16571),
             base_port: get_u16("base_port", 16572),
@@ -98,13 +120,22 @@ impl ApiConfig {
             allow_ipv4: get_bool("ipv4", true),
             allow_ipv6,
             multicast_addresses,
+            known_peers: get("known_peers")
+                .or_else(|| get("knownpeers"))
+                .map(|v| parse_peer_list(&v))
+                .unwrap_or_default(),
             multicast_ttl: get_u32("multicast_ttl", 24),
             session_id: get("session_id").unwrap_or_else(|| "default".into()),
             use_protocol_version: get("protocol_version")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(110),
             smoothing_halftime: get_f32("smoothing_halftime", 90.0),
-            system_clock: get("clock").is_some_and(|v| v.trim().eq_ignore_ascii_case("system")),
+            system_clock: clock_setting.unwrap_or(cfg!(feature = "liblsl-defaults")),
+            clock_setting,
+            compression: get("compression")
+                .map(|v| v.trim().to_ascii_lowercase())
+                .unwrap_or_default(),
+            replay: get_f64("replay", 0.0).max(0.0),
             time_update_interval: get_f64("time_update_interval", 2.0),
             time_probe_count: get("time_probe_count")
                 .and_then(|v| v.parse().ok())
@@ -116,6 +147,28 @@ impl ApiConfig {
                 .unwrap_or(6),
         }
     }
+}
+
+/// `{a, b}` / `a,b` / `a b`: the hosts of a `KnownPeers` setting.
+pub(crate) fn parse_peer_list(value: &str) -> Vec<String> {
+    value
+        .trim()
+        .trim_start_matches('{')
+        .trim_end_matches('}')
+        .split([',', ' ', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// A service socket address to try, in order: the ports of the LSL range
+/// (`base_port .. base_port + port_range`, 16572–16603 by default, where liblsl puts its
+/// services and where known peers are asked), then — unless `allow_random_ports` is off — any
+/// free port.
+pub(crate) fn service_ports() -> impl Iterator<Item = u16> {
+    let range = CONFIG.base_port..CONFIG.base_port.saturating_add(CONFIG.port_range);
+    range.chain(CONFIG.allow_random_ports.then_some(0))
 }
 
 /// Load key=value pairs from `lsl_api.cfg` (INI-like format).

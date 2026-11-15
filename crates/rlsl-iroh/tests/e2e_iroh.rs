@@ -96,6 +96,33 @@ async fn zero_loss_double64_snappy() {
     .await;
 }
 
+/// The stateful mode, through the real tunnel: every sample arrives, in order.
+#[tokio::test]
+async fn zero_loss_float32_stream_zstd() {
+    assert_zero_loss(BenchConfig {
+        channels: 32,
+        sample_rate: 500.0,
+        duration_secs: 1.0,
+        format: ChannelFormat::Float32,
+        compression: Compression::StreamZstd,
+        ..Default::default()
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn zero_loss_int32_stream_zstd() {
+    assert_zero_loss(BenchConfig {
+        channels: 8,
+        sample_rate: 250.0,
+        duration_secs: 1.0,
+        format: ChannelFormat::Int32,
+        compression: Compression::StreamZstd,
+        ..Default::default()
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn zero_loss_int32_zstd3() {
     assert_zero_loss(BenchConfig {

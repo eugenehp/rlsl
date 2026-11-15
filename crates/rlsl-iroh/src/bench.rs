@@ -203,6 +203,7 @@ async fn receive_loop(
     // Large read buffer: grab many samples per syscall
     let mut read_buf = vec![0u8; 128 * 1024];
     let mut leftover: Vec<u8> = Vec::new();
+    let mut decoder = compress::ChunkDecoder::new(compression, fmt.channel_bytes());
 
     loop {
         let n = recv.read(&mut read_buf).await?;
@@ -222,7 +223,7 @@ async fn receive_loop(
                 let consumed = if compression.is_compressed() {
                     let mut offset = 0;
                     while offset < data.len() {
-                        match compress::decompress_chunk(&data[offset..], compression) {
+                        match decoder.decompress(&data[offset..]) {
                             Some((decompressed, chunk_consumed)) => {
                                 offset += chunk_consumed;
                                 parse_samples(
@@ -370,6 +371,7 @@ pub async fn run_bench(config: BenchConfig) -> Result<BenchResults> {
         // Pre-allocate — reuse across iterations
         let mut write_buf = Vec::with_capacity(2048);
         let mut compressed_buf = Vec::with_capacity(2048);
+        let mut encoder = compress::ChunkEncoder::new(compression, fmt.channel_bytes());
         let mut sample = Sample::new(fmt, nch, 0.0);
         let interval_ns = (1_000_000_000.0 / sample_rate) as u64;
         let mut next_send = Instant::now();
@@ -405,7 +407,7 @@ pub async fn run_bench(config: BenchConfig) -> Result<BenchResults> {
 
             let wire_data = if compression.is_compressed() {
                 compressed_buf.clear();
-                compress::compress_chunk(&write_buf, compression, &mut compressed_buf);
+                encoder.compress(&write_buf, &mut compressed_buf);
                 compressed_buf.as_slice()
             } else {
                 write_buf.as_slice()

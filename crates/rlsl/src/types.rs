@@ -114,3 +114,15 @@ pub const TRANSP_BUFSIZE_THOUSANDTHS: i32 = 2;
 /// Tags for sample serialization protocol
 pub const TAG_DEDUCED_TIMESTAMP: u8 = 1;
 pub const TAG_TRANSMITTED_TIMESTAMP: u8 = 2;
+
+/// The number of samples a buffer of `max_buflen` holds for a stream of `nominal_srate`: that
+/// many seconds of data, or that many hundreds of samples when the rate is irregular — what
+/// `max_buflen` / `max_buffered` mean in LSL. At least one.
+pub fn buffer_samples(max_buflen: i32, nominal_srate: f64) -> usize {
+    let n = if nominal_srate > 0.0 {
+        max_buflen.max(0) as f64 * nominal_srate
+    } else {
+        max_buflen.max(0) as f64 * 100.0
+    };
+    (n.ceil() as usize).max(1)
+}

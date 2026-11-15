@@ -27,6 +27,60 @@ pub struct TcpPorts {
     pub shutdown: Arc<AtomicBool>,
 }
 
+/// The encoder of a compressed feed. Without the `compression` feature there is none to make:
+/// requests for compression are not understood and the feed is the plain protocol.
+#[cfg(feature = "compression")]
+type FeedEncoder = crate::compress::StreamEncoder;
+#[cfg(not(feature = "compression"))]
+enum FeedEncoder {}
+#[cfg(not(feature = "compression"))]
+impl FeedEncoder {
+    fn encode(&mut self, _raw: &[u8], _out: &mut Vec<u8>) {
+        match *self {}
+    }
+}
+
+/// The encoder for a consumer that asked for `requested` compression, when this outlet can
+/// give it: a known scheme, protocol 1.10, and samples that fit a frame.
+#[cfg(feature = "compression")]
+fn feed_encoder(
+    requested: &str,
+    protocol: i32,
+    fmt: crate::types::ChannelFormat,
+    channels: u32,
+) -> Option<FeedEncoder> {
+    let sample_bytes = 9 + fmt.channel_bytes() * channels as usize;
+    (requested.eq_ignore_ascii_case(crate::compress::STREAM_ZSTD)
+        && protocol >= 110
+        && fmt != crate::types::ChannelFormat::String
+        && fmt != crate::types::ChannelFormat::Undefined
+        && sample_bytes <= crate::compress::MAX_SAMPLE_BYTES)
+        .then(|| FeedEncoder::new(fmt.channel_bytes()))
+}
+#[cfg(not(feature = "compression"))]
+fn feed_encoder(
+    _requested: &str,
+    _protocol: i32,
+    _fmt: crate::types::ChannelFormat,
+    _channels: u32,
+) -> Option<FeedEncoder> {
+    None
+}
+
+/// Bind the data listener like liblsl: on the first free port of the LSL range (so that a
+/// firewall can be opened for it), any free port when the range is taken.
+async fn bind_service(ip: &str) -> std::io::Result<TcpListener> {
+    let ip: std::net::IpAddr = ip.parse().map_err(std::io::Error::other)?;
+    let mut last = std::io::Error::other("no service port to try");
+    for port in crate::config::service_ports() {
+        match TcpListener::bind(std::net::SocketAddr::new(ip, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
 impl TcpServer {
     /// Start the TCP server on both IPv4 and IPv6.
     /// Returns ports and a shared shutdown handle.
@@ -40,23 +94,28 @@ impl TcpServer {
         });
 
         // --- IPv4 listener ---
-        let v4_port = {
-            let listener = crate::RUNTIME
-                .block_on(async { TcpListener::bind("0.0.0.0:0").await })
-                .expect("Failed to bind TCPv4 server");
-            let port = listener.local_addr().unwrap().port();
-            let srv = server.clone();
-            crate::RUNTIME.spawn(async move {
-                Self::accept_loop(listener, srv, chunk_size).await;
-            });
-            port
+        // A machine without IPv4, or with every allowed port taken, must not take the program
+        // down: the outlet then has no IPv4 data port (0), and says so.
+        let v4_port = match crate::RUNTIME.block_on(bind_service("0.0.0.0")) {
+            Ok(listener) => {
+                let port = listener.local_addr().map_or(0, |a| a.port());
+                let srv = server.clone();
+                crate::RUNTIME.spawn(async move {
+                    Self::accept_loop(listener, srv, chunk_size).await;
+                });
+                port
+            }
+            Err(e) => {
+                log::error!("no IPv4 data port for the outlet: {e}");
+                0
+            }
         };
 
         // --- IPv6 listener ---
         let v6_port = if crate::config::CONFIG.allow_ipv6 {
-            match crate::RUNTIME.block_on(async { TcpListener::bind("[::]:0").await }) {
+            match crate::RUNTIME.block_on(bind_service("::")) {
                 Ok(listener) => {
-                    let port = listener.local_addr().unwrap().port();
+                    let port = listener.local_addr().map_or(0, |a| a.port());
                     let srv = server.clone();
                     crate::RUNTIME.spawn(async move {
                         Self::accept_loop(listener, srv, chunk_size).await;
@@ -135,21 +194,39 @@ impl TcpServer {
     /// Send the consumer's samples until it disconnects or the outlet shuts down.
     fn feed(
         mut stream: std::net::TcpStream,
-        consumer: crossbeam_channel::Receiver<Option<Sample>>,
+        consumer: crate::send_buffer::BufferedConsumer,
         shutdown: &AtomicBool,
         data_protocol_version: i32,
         effective_chunk: i32,
+        mut encoder: Option<FeedEncoder>,
+        suppress_subnormals: bool,
     ) {
         use std::io::Write;
         let mut chunk_count = 0;
         let mut chunk_buf = Vec::with_capacity(4096);
+        let mut sample_buf = Vec::with_capacity(512);
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 break;
             }
-            match consumer.recv_timeout(std::time::Duration::from_millis(100)) {
+            match consumer
+                .receiver
+                .recv_timeout(std::time::Duration::from_millis(100))
+            {
                 Ok(Some(sample)) => {
-                    if data_protocol_version >= 110 {
+                    // a consumer whose machine cannot hold subnormal numbers gets zeros for them
+                    let flushed = if suppress_subnormals {
+                        sample.without_subnormals()
+                    } else {
+                        None
+                    };
+                    let sample = flushed.as_ref().unwrap_or(&sample);
+                    if let Some(enc) = encoder.as_mut() {
+                        // one frame per sample, coded against the samples before it
+                        sample_buf.clear();
+                        sample.serialize_110(&mut sample_buf);
+                        enc.encode(&sample_buf, &mut chunk_buf);
+                    } else if data_protocol_version >= 110 {
                         sample.serialize_110(&mut chunk_buf);
                     } else {
                         sample.serialize_100(&mut chunk_buf);
@@ -194,6 +271,9 @@ impl TcpServer {
         let mut max_chunklen = 0;
         let mut _request_uid = String::new();
         let mut data_protocol_version = 110;
+        let mut encoder: Option<FeedEncoder> = None;
+        let mut suppress_subnormals = false;
+        let mut replay_seconds = 0.0f64;
 
         if command.starts_with("LSL:streamfeed/") {
             // Parse version and optional UID from command line
@@ -202,7 +282,11 @@ impl TcpServer {
                 .first()
                 .and_then(|s| s.strip_prefix("LSL:streamfeed/"))
             {
-                data_protocol_version = ver_str.parse().unwrap_or(110);
+                // the lower of what the consumer speaks and what this outlet is set to
+                data_protocol_version = ver_str
+                    .parse::<i32>()
+                    .unwrap_or(110)
+                    .min(CONFIG.use_protocol_version);
             }
             if parts.len() > 1 {
                 _request_uid = parts[1].to_string();
@@ -227,17 +311,66 @@ impl TcpServer {
                         "max-chunk-length" => {
                             max_chunklen = val.parse().unwrap_or(0);
                         }
+                        // the consumer's machine has no subnormal numbers: it must not be
+                        // sent any (liblsl's negotiation; this outlet always sends little-endian
+                        // IEEE 754, which the consumer converts from as it needs)
+                        // an rlsl inlet that connected late asking for what it missed
+                        // (liblsl never does): granted as far as this outlet keeps a history
+                        "rlsl-replay" => {
+                            replay_seconds = val
+                                .trim()
+                                .parse::<f64>()
+                                .ok()
+                                .filter(|s| s.is_finite() && *s > 0.0)
+                                .map_or(0.0, |s| s.min(self.send_buffer.history_seconds()));
+                        }
+                        "supports-subnormals" => {
+                            suppress_subnormals = val.trim() == "0";
+                        }
+                        // an rlsl inlet asking for a compressed feed (liblsl never does)
+                        "rlsl-compression" => {
+                            encoder = feed_encoder(
+                                &val,
+                                data_protocol_version,
+                                self.info.channel_format(),
+                                self.info.channel_count(),
+                            );
+                        }
                         _ => {}
                     }
                 }
             }
 
-            // Send response
+            // The consumer names the stream it wants. This port may have belonged to another
+            // outlet a moment ago — services sit in a small range of ports, and an inlet that
+            // lost its stream comes back to the address it knew — so a request for another
+            // stream is refused, as liblsl refuses it, and the inlet looks for its stream
+            // again instead of being fed somebody else's samples.
+            if !_request_uid.is_empty() && _request_uid != self.info.uid() {
+                let refusal = format!("LSL/{} 404 Not found\r\n\r\n", CONFIG.use_protocol_version);
+                reader.get_mut().write_all(refusal.as_bytes()).await?;
+                reader.get_mut().flush().await?;
+                return Ok(());
+            }
+
+            // Send response. Agreeing to compress is said here; from the blank line on, the
+            // feed (test patterns included) is then compressed frames.
+            let mut compression = if encoder.is_some() {
+                "Rlsl-Compression: stream-zstd\r\n".to_string()
+            } else {
+                String::new()
+            };
+            if replay_seconds > 0.0 {
+                // how far back the feed starts
+                compression.push_str(&format!("Rlsl-Replay: {replay_seconds}\r\n"));
+            }
             let response = format!(
-                "LSL/{} 200 OK\r\nUID: {}\r\nByte-Order: 1234\r\nSuppress-Subnormals: 0\r\nData-Protocol-Version: {}\r\n\r\n",
+                "LSL/{} 200 OK\r\nUID: {}\r\nByte-Order: 1234\r\nSuppress-Subnormals: {}\r\nData-Protocol-Version: {}\r\n{}\r\n",
                 CONFIG.use_protocol_version,
                 self.info.uid(),
-                data_protocol_version
+                u8::from(suppress_subnormals),
+                data_protocol_version,
+                compression
             );
             reader.get_mut().write_all(response.as_bytes()).await?;
             reader.get_mut().flush().await?;
@@ -250,6 +383,18 @@ impl TcpServer {
                 max_buffered = parts[0].parse().unwrap_or(360);
                 max_chunklen = parts[1].parse().unwrap_or(0);
             }
+            // a request without a version is protocol 1.00
+            data_protocol_version = 100;
+        }
+
+        if data_protocol_version < 110 {
+            // The feed of protocol 1.00 is one "portable archive": its header, the stream's
+            // short description as a string, and then the samples — the first of them
+            // preceded by its class information, as liblsl's serialisation library writes it.
+            let mut opening = crate::sample::portable::HEADER.to_vec();
+            crate::sample::portable::put_string(&mut opening, &self.info.to_shortinfo_message());
+            opening.extend_from_slice(&crate::sample::portable::SAMPLE_CLASS_INFO);
+            reader.get_mut().write_all(&opening).await?;
         }
 
         // Send test pattern samples using the negotiated protocol version
@@ -259,7 +404,11 @@ impl TcpServer {
             let mut test_sample = Sample::new(fmt, nch, 0.0);
             test_sample.assign_test_pattern(test_offset);
             let mut buf = Vec::new();
-            if data_protocol_version >= 110 {
+            if let Some(enc) = encoder.as_mut() {
+                let mut raw = Vec::new();
+                test_sample.serialize_110(&mut raw);
+                enc.encode(&raw, &mut buf);
+            } else if data_protocol_version >= 110 {
                 test_sample.serialize_110(&mut buf);
             } else {
                 test_sample.serialize_100(&mut buf);
@@ -273,7 +422,17 @@ impl TcpServer {
         }
 
         // Subscribe to the send buffer
-        let consumer = self.send_buffer.new_consumer(max_buffered as usize);
+        // The consumer's buffer: `max_buffered` is seconds of data at the stream's rate, or
+        // hundreds of samples for an irregular stream, as in liblsl. (It used to be taken as a
+        // number of samples, and a consumer that fell 360 samples behind — 0.7 s at 500 Hz —
+        // had its feed ended.)
+        let consumer = self.send_buffer.new_replaying_consumer(
+            crate::types::buffer_samples(
+                self.send_buffer.granted_buffer(max_buffered),
+                self.info.nominal_srate(),
+            ),
+            replay_seconds,
+        );
 
         let effective_chunk = if max_chunklen > 0 {
             max_chunklen
@@ -296,6 +455,8 @@ impl TcpServer {
                 &shutdown,
                 data_protocol_version,
                 effective_chunk,
+                encoder,
+                suppress_subnormals,
             )
         })
         .await;
