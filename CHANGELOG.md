@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-11-15
+
+### Changed
+
+- **HDF5 recordings use `hdf5-no-c` 0.1.3** (`rlsl-rec`, feature `hdf5`, off by default). It no
+  longer depends on `ruzstd`, whose decoder could be made to allocate gigabytes by a small input
+  (RUSTSEC-2026-0344), nor on the unmaintained `proc-macro-error` (RUSTSEC-2024-0370).
+
+### Fixed
+
+- A test of the subnormal-number handshake no longer fails when its first sample is pushed
+  before the outlet has subscribed the consumer.
+
 ## [0.0.9] — 2026-11-15
 
 **Nothing here changes what an existing Rust program gets.** The clock, the sign of

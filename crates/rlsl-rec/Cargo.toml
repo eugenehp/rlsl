@@ -32,7 +32,7 @@ parquet = { version = "60", features = ["arrow", "zstd"] }
 
 # HDF5 recordings (`RecordingFormat::Hdf5`), written by a pure-Rust HDF5 implementation: no
 # libhdf5 to install. Off by default.
-hdf5 = { package = "hdf5-no-c", version = "0.1.1", optional = true }
+hdf5 = { package = "hdf5-no-c", version = "0.1.3", optional = true }
 ndarray = { version = "0.15", optional = true }
 
 [features]

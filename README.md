@@ -94,7 +94,7 @@ clock minus the local one, and `PROC_CLOCKSYNC` adds what the caller last measur
 behaviour instead — the machine clock, liblsl's sign, automatic synchronisation — build with
 
 ```toml
-rlsl = { version = "0.0.9", features = ["liblsl-defaults"] }
+rlsl = { version = "0.1.0", features = ["liblsl-defaults"] }
 ```
 
 or choose each at run time (`LSL_CLOCK=system`, `clock_offset()`, `set_clock_sync(true)`).
@@ -128,7 +128,7 @@ can ask an rlsl outlet for a compressed feed — about 70 % of the bytes for an 
 for bit the same values:
 
 ```toml
-rlsl = { version = "0.0.9", features = ["compression"] }
+rlsl = { version = "0.1.0", features = ["compression"] }
 ```
 
 ```rust

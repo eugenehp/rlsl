@@ -198,7 +198,13 @@ fn subnormals_are_flushed_for_a_consumer_that_cannot_hold_them() {
         // two test patterns: tag, time stamp, two doubles each
         let mut patterns = [0u8; 2 * (1 + 8 + 16)];
         reader.read_exact(&mut patterns).unwrap();
-        // wait until the outlet has this consumer, then one sample
+        // wait until the outlet has this consumer, then one sample: the outlet subscribes the
+        // consumer only after the test patterns, so a sample pushed before then is never sent —
+        // a short timeout keeps pushing until one arrives
+        reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(5) {
             outlet.push_sample_d(&[tiny, 1.5], 7.0, true);
