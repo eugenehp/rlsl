@@ -517,8 +517,11 @@ async fn e2e_markers_are_recorded_in_every_format() {
         let _ = std::fs::remove_dir_all(path);
         let _ = std::fs::remove_file(path);
         let rec = Recording::start_with_format(path, &[stream], format).expect("start");
+        // the recorder's own connection: `have_consumers` would also be true for any other
+        // program on the machine that subscribes to new streams
+        let state = rec.state.clone();
         let sender = std::thread::spawn(move || {
-            while !outlet.have_consumers() {
+            while state.streams_open.load(Ordering::Relaxed) == 0 {
                 std::thread::sleep(Duration::from_millis(20));
             }
             for i in 0..40 {

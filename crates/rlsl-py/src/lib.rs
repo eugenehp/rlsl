@@ -368,10 +368,14 @@ impl PyStreamInlet {
         Ok((data_array, ts_array))
     }
 
-    /// Get the clock offset correction value.
+    /// The number of seconds to add to this stream's time stamps to get this machine's
+    /// `local_clock()` time, as in pylsl. Raises `TimeoutError` when the outlet does not answer
+    /// within `timeout`.
     #[pyo3(signature = (timeout=2.0))]
-    fn time_correction(&self, timeout: f64) -> f64 {
-        self.inner.time_correction(timeout)
+    fn time_correction(&self, timeout: f64) -> PyResult<f64> {
+        self.inner.clock_offset(timeout).ok_or_else(|| {
+            PyTimeoutError::new_err("the stream's time service did not answer")
+        })
     }
 
     /// Number of samples available for immediate read.

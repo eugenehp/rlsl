@@ -39,3 +39,6 @@ ndarray = { version = "0.15", optional = true }
 default = []
 # Record to HDF5 (one `.h5` file per recording).
 hdf5 = ["dep:hdf5", "dep:ndarray"]
+# Clock measurements with the streams (`ClockSyncOptions`): in-band records, companion clock
+# streams, clock offsets from a clock mesh.
+ntp = ["rlsl/ntp"]

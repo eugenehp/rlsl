@@ -31,6 +31,10 @@ jobs:
       # rlsl-py and rlsl-fuzz are outside the workspace
       - name: Clippy (workspace, all targets)
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Clippy (ntp feature)
+        run: >
+          cargo clippy -p rlsl -p rlsl-rec -p rlsl-cli --all-targets
+          --features rlsl/ntp,rlsl/compression,rlsl-rec/ntp,rlsl-cli/ntp -- -D warnings
 
   # ── Dependency audit ──────────────────────────────────────────────
   deny:
@@ -113,9 +117,16 @@ jobs:
       - name: Unit tests (rlsl, compression feature)
         run: cargo test -p rlsl --features compression --target ${{ matrix.target }}
 
+      - name: Unit tests (rlsl, ntp feature)
+        run: cargo test -p rlsl --features ntp,compression --target ${{ matrix.target }}
+
       - name: E2E tests (rlsl-rec)
         if: runner.os == 'Linux'
         run: cargo test -p rlsl-rec --target ${{ matrix.target }} -- --nocapture
+
+      - name: E2E tests (rlsl-rec, ntp feature)
+        if: runner.os == 'Linux'
+        run: cargo test -p rlsl-rec --features ntp --target ${{ matrix.target }} -- --nocapture
 
       - name: E2E tests (rlsl-rec, HDF5 feature)
         if: runner.os == 'Linux'

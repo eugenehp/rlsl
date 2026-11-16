@@ -160,12 +160,204 @@ impl Clone for Writer {
 unsafe impl Send for Writer {}
 unsafe impl Sync for Writer {}
 
+// ── Clock measurements ───────────────────────────────────────────────
+
+/// How a recording gets the clock measurements that go with its streams, for correcting time
+/// stamps afterwards (feature `ntp`). Any combination may be on.
+#[cfg(feature = "ntp")]
+#[derive(Clone, Default)]
+pub struct ClockSyncOptions {
+    /// Ask each outlet for its clock records in-band, inside the stream's own connection. An
+    /// rlsl outlet with a clock mesh attached sends them; they are recorded as a stream of type
+    /// `ClockSync` next to the data stream (`<name> (clock)`, its `<desc><clock_sync>` naming
+    /// the data stream).
+    pub in_band: bool,
+    /// Record each stream's companion clock stream with it, if its outlet has one.
+    pub companions: bool,
+    /// Measure the machines the streams come from with this mesh node, and write those
+    /// measurements as the streams' clock offsets (what XDF readers apply) — checked against
+    /// LSL's own per-stream probe, which is used instead when the two disagree (an outlet that
+    /// time-stamps with its process clock rather than the machine's).
+    pub mesh: Option<Arc<rlsl::ntp::ClockMesh>>,
+}
+
+#[cfg(feature = "ntp")]
+impl ClockSyncOptions {
+    /// From the environment: `RLSL_REC_CLOCK` lists the ways (`in-band`, `companion`, `mesh`,
+    /// comma-separated); for `mesh`, `RLSL_REC_CLOCK_PEERS` names the machines to measure
+    /// (`host[:port]`, comma-separated), `RLSL_REC_CLOCK_PORT` this node's port (default
+    /// 12300) and `RLSL_REC_CLOCK_ID` its name (default `hostname:port`).
+    pub fn from_env() -> Self {
+        let ways = std::env::var("RLSL_REC_CLOCK").unwrap_or_default();
+        let has = |w: &str| ways.split(',').any(|x| x.trim().eq_ignore_ascii_case(w));
+        let mesh = has("mesh").then(|| {
+            let peers = std::env::var("RLSL_REC_CLOCK_PEERS").unwrap_or_default();
+            let port = std::env::var("RLSL_REC_CLOCK_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(rlsl::ntp::DEFAULT_MESH_PORT);
+            rlsl::ntp::ClockMesh::start(rlsl::ntp::ClockMeshConfig {
+                node_id: std::env::var("RLSL_REC_CLOCK_ID").unwrap_or_default(),
+                bind: std::net::SocketAddr::from(([0, 0, 0, 0], port)),
+                peers: peers
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .map(String::from)
+                    .collect(),
+                ..Default::default()
+            })
+            .map_err(|e| eprintln!("clock mesh on port {port}: {e}"))
+            .ok()
+            .map(Arc::new)
+        });
+        ClockSyncOptions {
+            in_band: has("in-band") || has("inband"),
+            companions: has("companion") || has("companions"),
+            mesh: mesh.flatten(),
+        }
+    }
+}
+
+#[cfg(feature = "ntp")]
+type ClockOptions = ClockSyncOptions;
+#[cfg(not(feature = "ntp"))]
+#[derive(Clone, Default)]
+struct ClockOptions;
+
+#[cfg(feature = "ntp")]
+fn clock_options_from_env() -> ClockOptions {
+    ClockSyncOptions::from_env()
+}
+#[cfg(not(feature = "ntp"))]
+fn clock_options_from_env() -> ClockOptions {
+    ClockOptions
+}
+
+/// The streams to record: those chosen and, when asked for, their companion clock streams.
+#[cfg(feature = "ntp")]
+fn with_companions(streams: &[StreamInfo], clock: &ClockOptions) -> Vec<StreamInfo> {
+    let mut all = streams.to_vec();
+    if !clock.companions {
+        return all;
+    }
+    for s in streams {
+        if s.type_() == rlsl::ntp::CLOCK_STREAM_TYPE {
+            continue;
+        }
+        let base = if s.source_id().is_empty() {
+            s.uid()
+        } else {
+            s.source_id()
+        };
+        let id = rlsl::ntp::clock_source_id(&base);
+        for c in rlsl::resolver::resolve_by_property("source_id", &id, 1, 1.0) {
+            if !all.iter().any(|x| x.uid() == c.uid()) {
+                all.push(c);
+            }
+        }
+    }
+    all
+}
+#[cfg(not(feature = "ntp"))]
+fn with_companions(streams: &[StreamInfo], _clock: &ClockOptions) -> Vec<StreamInfo> {
+    streams.to_vec()
+}
+
+/// What to add to the stream's time stamps to get this machine's clock, by the mesh: the
+/// machine the stream comes from, measured, as a line through the measurements — if LSL's own
+/// probe of the stream (`lsl`) agrees to within a quarter second, which it does when the outlet
+/// time-stamps with its machine's clock.
+#[cfg(feature = "ntp")]
+fn mesh_clock_offset(clock: &ClockOptions, source_ip: &str, lsl: Option<f64>) -> Option<f64> {
+    let mesh = clock.mesh.as_ref()?;
+    let ip: std::net::IpAddr = source_ip.parse().ok()?;
+    let fit = mesh.mono_fit_to(ip)?;
+    let now = rlsl::clock::system_clock();
+    // the source's clock is `offset_at(now)` ahead of this machine's monotonic clock, which is
+    // `system_clock - local_clock` ahead of this recording's clock
+    let offset = -fit.offset_at(now) - (now - local_clock());
+    (lsl? - offset).abs().lt(&0.25).then_some(offset)
+}
+#[cfg(not(feature = "ntp"))]
+fn mesh_clock_offset(_clock: &ClockOptions, _source_ip: &str, _lsl: Option<f64>) -> Option<f64> {
+    None
+}
+
+/// The clock records a stream brought in-band, recorded as a clock stream of their own.
+struct InBandClock {
+    stream_id: u32,
+    started: bool,
+    count: u64,
+    first_ts: f64,
+    last_ts: f64,
+}
+
+impl InBandClock {
+    #[cfg(feature = "ntp")]
+    fn record(
+        &mut self,
+        inlet: &StreamInlet,
+        info: &StreamInfo,
+        writer: &Writer,
+    ) -> anyhow::Result<()> {
+        let records = inlet.pull_clock_records();
+        let Some(first) = records.first() else {
+            return Ok(());
+        };
+        if !self.started {
+            let clock_info = rlsl::ntp::clock_stream_info(info, &first.from);
+            writer.write_stream_header(
+                self.stream_id,
+                &clock_info,
+                &clock_info.to_fullinfo_message(),
+            )?;
+            self.started = true;
+        }
+        let now = local_clock();
+        let stamps = vec![now; records.len()];
+        let fields: Vec<String> = records.iter().flat_map(|r| r.to_fields()).collect();
+        let n = rlsl::ntp::ClockRecord::FIELDS.len() as u32;
+        writer.write_samples_string(self.stream_id, &stamps, &fields, n)?;
+        if self.count == 0 {
+            self.first_ts = now;
+        }
+        self.last_ts = now;
+        self.count += records.len() as u64;
+        Ok(())
+    }
+
+    #[cfg(not(feature = "ntp"))]
+    fn record(&mut self, _: &StreamInlet, _: &StreamInfo, _: &Writer) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn finish(&self, writer: &Writer) -> anyhow::Result<()> {
+        if !self.started {
+            return Ok(());
+        }
+        let footer = format!(
+            "<?xml version=\"1.0\"?><info>\
+             <first_timestamp>{}</first_timestamp>\
+             <last_timestamp>{}</last_timestamp>\
+             <sample_count>{}</sample_count>\
+             </info>",
+            self.first_ts, self.last_ts, self.count
+        );
+        writer.write_stream_footer_xdf(self.stream_id, &footer)?;
+        writer.write_stream_footer_parquet(self.stream_id, self.first_ts, self.last_ts, self.count)
+    }
+}
+
 // ── Shared recording state ──────────────────────────────────────────
 
 /// Shared recording state visible to the TUI/GUI.
 pub struct RecordingState {
     pub sample_count: AtomicU64,
     pub stream_count: AtomicU64,
+    /// Streams whose connection is open: from then on every sample their outlet sends is
+    /// recorded.
+    pub streams_open: AtomicU64,
     pub running: AtomicBool,
 }
 
@@ -216,6 +408,32 @@ impl Recording {
         format: RecordingFormat,
         parquet: crate::parquet_writer::ParquetOptions,
     ) -> anyhow::Result<Self> {
+        Self::start_inner(filename, streams, format, parquet, clock_options_from_env())
+    }
+
+    /// [`start_with_parquet_options`](Self::start_with_parquet_options), choosing how the
+    /// clock measurements that go with the streams are recorded (feature `ntp`; without this,
+    /// the `RLSL_REC_CLOCK` environment variable chooses — see
+    /// [`ClockSyncOptions::from_env`]).
+    #[cfg(feature = "ntp")]
+    pub fn start_with_clock_sync(
+        filename: &str,
+        streams: &[StreamInfo],
+        format: RecordingFormat,
+        parquet: crate::parquet_writer::ParquetOptions,
+        clock: ClockSyncOptions,
+    ) -> anyhow::Result<Self> {
+        Self::start_inner(filename, streams, format, parquet, clock)
+    }
+
+    fn start_inner(
+        filename: &str,
+        streams: &[StreamInfo],
+        format: RecordingFormat,
+        parquet: crate::parquet_writer::ParquetOptions,
+        clock: ClockOptions,
+    ) -> anyhow::Result<Self> {
+        let streams = &with_companions(streams, &clock)[..];
         let writer = match format {
             RecordingFormat::Xdf => Writer::Xdf(Arc::new(XdfWriter::new(filename)?)),
             RecordingFormat::Parquet => Writer::Parquet(Arc::new(
@@ -230,6 +448,7 @@ impl Recording {
         let state = Arc::new(RecordingState {
             sample_count: AtomicU64::new(0),
             stream_count: AtomicU64::new(0),
+            streams_open: AtomicU64::new(0),
             running: AtomicBool::new(true),
         });
 
@@ -240,6 +459,9 @@ impl Recording {
 
         for (idx, info) in streams.iter().enumerate() {
             let sid = (idx + 1) as u32;
+            // the clock records a stream brings in-band, if it does, are a stream of their own
+            let clock_sid = (streams.len() + idx + 1) as u32;
+            let clock = clock.clone();
             let info = info.clone();
             let writer = writer.clone();
             let shutdown = shutdown.clone();
@@ -250,7 +472,9 @@ impl Recording {
             // Each stream recorder runs as a blocking task because
             // inlet.open_stream() and pull_sample_* are blocking calls.
             let task = handle.spawn_blocking(move || {
-                if let Err(e) = record_stream(sid, &info, &writer, &shutdown, &st) {
+                if let Err(e) =
+                    record_stream(sid, clock_sid, &info, &writer, &shutdown, &st, &clock)
+                {
                     eprintln!("Stream {} error: {}", info.name(), e);
                 }
             });
@@ -369,12 +593,32 @@ impl Drop for Recording {
 
 fn record_stream(
     stream_id: u32,
+    clock_stream_id: u32,
     info: &StreamInfo,
     writer: &Writer,
     shutdown: &Arc<AtomicBool>,
     state: &Arc<RecordingState>,
+    clock: &ClockOptions,
 ) -> anyhow::Result<()> {
     let inlet = StreamInlet::new(info, 360, 0, true);
+    // the address the stream was found at: the machine whose clock its time stamps are on
+    let source_ip = info.v4address();
+    let mut in_band = InBandClock {
+        stream_id: clock_stream_id,
+        started: false,
+        count: 0,
+        first_ts: 0.0,
+        last_ts: 0.0,
+    };
+    #[cfg(feature = "ntp")]
+    {
+        if info.type_() == rlsl::ntp::CLOCK_STREAM_TYPE {
+            // a clock stream keeps its last hour for a recorder that starts late
+            inlet.set_replay(3600.0);
+        } else if clock.in_band {
+            inlet.set_clock_records(true);
+        }
+    }
     inlet
         .open_stream(10.0)
         .map_err(|e| anyhow::anyhow!("open_stream: {}", e))?;
@@ -382,6 +626,7 @@ fn record_stream(
     // The stream as its outlet describes it: a resolved stream carries no description, and
     // with it the channel labels and everything else an outlet says about itself would be
     // missing from the recording.
+    state.streams_open.fetch_add(1, Ordering::Relaxed);
     let full = inlet.get_fullinfo(5.0);
     let info = &full;
     let header_xml = info.to_fullinfo_message();
@@ -395,8 +640,12 @@ fn record_stream(
     let mut last_ts = 0.0f64;
     let mut total_samples = 0u64;
     let mut last_offset_time = local_clock();
+    // where the clock offsets written came from: the clock mesh, or LSL's probe of the stream
+    let (mut offsets_from_mesh, mut offsets_from_probe) = (0u64, 0u64);
 
-    while !shutdown.load(Ordering::Relaxed) {
+    loop {
+        // once more after being told to stop: what has arrived by then is recorded too
+        let stopping = shutdown.load(Ordering::Relaxed);
         match fmt {
             ChannelFormat::Float32 => {
                 pull_chunk_typed::<f32>(
@@ -499,6 +748,10 @@ fn record_stream(
             }
         }
 
+        if stopping {
+            break;
+        }
+
         // Periodic clock offset
         let now = local_clock();
         if now - last_offset_time > 5.0 {
@@ -506,11 +759,19 @@ fn record_stream(
             // an XDF ClockOffset chunk holds and what readers (pyxdf, EEGLAB) apply. Nothing is
             // written when the outlet does not answer: a made-up zero would be applied as a
             // measurement. (Up to 0.0.8 the opposite sign was written, and 0 on no answer.)
-            if let Some(offset) = inlet.clock_offset(2.0) {
+            let lsl = inlet.clock_offset(2.0);
+            let mesh = mesh_clock_offset(clock, &source_ip, lsl);
+            if let Some(offset) = mesh.or(lsl) {
                 writer.write_clock_offset(stream_id, now, offset)?;
+                if mesh.is_some() {
+                    offsets_from_mesh += 1;
+                } else {
+                    offsets_from_probe += 1;
+                }
             }
             last_offset_time = now;
         }
+        in_band.record(&inlet, info, writer)?;
 
         // Sleep inside spawn_blocking is fine — it doesn't block the
         // async executor, only this blocking-pool thread.
@@ -523,10 +784,15 @@ fn record_stream(
          <first_timestamp>{first_ts}</first_timestamp>\
          <last_timestamp>{last_ts}</last_timestamp>\
          <sample_count>{total_samples}</sample_count>\
+         <clock_offsets><from_clock_mesh>{offsets_from_mesh}</from_clock_mesh>\
+         <from_lsl_probe>{offsets_from_probe}</from_lsl_probe></clock_offsets>\
          </info>"
     );
     writer.write_stream_footer_xdf(stream_id, &footer)?;
     writer.write_stream_footer_parquet(stream_id, first_ts, last_ts, total_samples)?;
+    in_band.record(&inlet, info, writer)?;
+    state.streams_open.fetch_sub(1, Ordering::Relaxed);
+    in_band.finish(writer)?;
 
     Ok(())
 }

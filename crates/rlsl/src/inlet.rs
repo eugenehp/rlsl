@@ -36,25 +36,78 @@ fn feed_decoder(_value_bytes: usize) -> Option<FeedDecoder> {
     None
 }
 
-/// Read one frame of a compressed feed and the sample in it.
+/// Where an inlet puts the clock records it is sent in-band (feature `ntp`).
+#[cfg(feature = "ntp")]
+type ClockInbox = Arc<crate::ntp::feed::ClockInbox>;
+#[cfg(not(feature = "ntp"))]
+#[derive(Clone)]
+struct ClockInbox;
+
+#[cfg(feature = "ntp")]
+fn deliver_clock_record(inbox: Option<&ClockInbox>, bytes: &[u8]) {
+    if let Some(inbox) = inbox {
+        inbox.accept(bytes);
+    }
+}
+#[cfg(not(feature = "ntp"))]
+fn deliver_clock_record(_inbox: Option<&ClockInbox>, _bytes: &[u8]) {}
+
+/// The tag a clock record starts with in a plain feed (see `ntp::feed`).
+const CLOCK_TAG: u8 = 0xC5;
+
+/// Read the clock records ahead of the next sample of a plain feed.
+async fn read_clock_records_plain(
+    reader: &mut BufReader<TcpStream>,
+    inbox: Option<&ClockInbox>,
+) -> Result<(), String> {
+    loop {
+        let next = reader.fill_buf().await.map_err(|e| e.to_string())?;
+        if next.first() != Some(&CLOCK_TAG) {
+            return Ok(());
+        }
+        reader.consume(1);
+        let mut len = [0u8; 2];
+        reader
+            .read_exact(&mut len)
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut line = vec![0u8; u16::from_le_bytes(len) as usize];
+        reader
+            .read_exact(&mut line)
+            .await
+            .map_err(|e| e.to_string())?;
+        deliver_clock_record(inbox, &line);
+    }
+}
+
+/// Read one frame of a compressed feed and the sample in it. Frames of no sample are clock
+/// records, handed to `inbox`.
 async fn read_sample_compressed<R: tokio::io::AsyncRead + Unpin>(
     reader: &mut R,
     decoder: &mut FeedDecoder,
     fmt: ChannelFormat,
     nch: u32,
+    inbox: Option<&ClockInbox>,
 ) -> Result<Sample, String> {
     let mut header = [0u8; 4];
-    reader
-        .read_exact(&mut header)
-        .await
-        .map_err(|e| e.to_string())?;
-    let payload_len = u16::from_le_bytes([header[0], header[1]]) as usize;
-    let sample_len = u16::from_le_bytes([header[2], header[3]]) as usize;
-    let mut payload = vec![0u8; payload_len];
-    reader
-        .read_exact(&mut payload)
-        .await
-        .map_err(|e| e.to_string())?;
+    let (sample_len, payload) = loop {
+        reader
+            .read_exact(&mut header)
+            .await
+            .map_err(|e| e.to_string())?;
+        let payload_len = u16::from_le_bytes([header[0], header[1]]) as usize;
+        let sample_len = u16::from_le_bytes([header[2], header[3]]) as usize;
+        let mut payload = vec![0u8; payload_len];
+        reader
+            .read_exact(&mut payload)
+            .await
+            .map_err(|e| e.to_string())?;
+        if sample_len == 0 {
+            deliver_clock_record(inbox, &payload);
+            continue;
+        }
+        break (sample_len, payload);
+    };
     let raw = decoder
         .decode_payload(&payload, sample_len)
         .ok_or_else(|| "compressed stream is damaged".to_string())?;
@@ -73,11 +126,20 @@ struct FeedOptions {
     replay_granted: Arc<Mutex<f64>>,
     /// Samples held for a slow reader before the inlet stops taking more.
     buffer_cap: usize,
+    /// Where clock records go, when the inlet asks for them in-band.
+    clock: Option<ClockInbox>,
+    /// Set when the outlet agrees to send clock records.
+    clock_on: Arc<AtomicBool>,
 }
 
 /// A stream inlet. Receives data from a stream outlet.
 pub struct StreamInlet {
     info: StreamInfo,
+    /// The outlet the inlet is connected to now: `info`, until a lost stream is recovered from
+    /// a new outlet (another process, other ports, another clock).
+    current: Arc<Mutex<StreamInfo>>,
+    /// The connection was recovered and the time-stamp post-processing has not caught up yet.
+    recovered: Arc<AtomicBool>,
     max_buflen: i32,
     max_chunklen: i32,
     recover: bool,
@@ -108,6 +170,14 @@ pub struct StreamInlet {
     postproc: Mutex<crate::postproc::TimestampPostProcessor>,
     /// the outlet's full info, once fetched
     fullinfo: Mutex<Option<StreamInfo>>,
+    /// Ask the outlet for its clock records in-band.
+    #[cfg(feature = "ntp")]
+    want_clock_records: Arc<AtomicBool>,
+    /// The clock records received.
+    #[cfg(feature = "ntp")]
+    clock_inbox: ClockInbox,
+    /// The outlet agreed to send clock records.
+    clock_records_on: Arc<AtomicBool>,
 }
 
 impl StreamInlet {
@@ -125,6 +195,8 @@ impl StreamInlet {
         let halftime = crate::config::CONFIG.smoothing_halftime;
         StreamInlet {
             info: info.clone(),
+            current: Arc::new(Mutex::new(info.clone())),
+            recovered: Arc::new(AtomicBool::new(false)),
             max_buflen,
             max_chunklen,
             recover,
@@ -149,6 +221,11 @@ impl StreamInlet {
                 PROC_NONE, srate, halftime,
             )),
             fullinfo: Mutex::new(None),
+            #[cfg(feature = "ntp")]
+            want_clock_records: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "ntp")]
+            clock_inbox: Default::default(),
+            clock_records_on: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -170,12 +247,24 @@ impl StreamInlet {
         let replay_granted = self.replay_granted.clone();
         let compressed = self.compressed.clone();
         let buffer_cap = self.buffer_cap;
+        #[cfg(feature = "ntp")]
+        let clock = self
+            .want_clock_records
+            .load(Ordering::Relaxed)
+            .then(|| self.clock_inbox.clone());
+        #[cfg(not(feature = "ntp"))]
+        let clock: Option<ClockInbox> = None;
+        let clock_on = self.clock_records_on.clone();
 
         // Start the data receiver in a dedicated thread with its own runtime.
         // When `recover` is true, automatically re-resolves and reconnects on loss.
         let connected2 = self.connected.clone();
         let recover = self.recover;
-        let source_uid = info.uid();
+        let (current, recovered, correction_at) = (
+            self.current.clone(),
+            self.recovered.clone(),
+            self.time_correction_at.clone(),
+        );
         std::thread::Builder::new()
             .name("lsl_data_recv".to_string())
             .spawn(move || {
@@ -213,6 +302,8 @@ impl StreamInlet {
                                 replay: replay_now,
                                 replay_granted: replay_granted.clone(),
                                 buffer_cap,
+                                clock: clock.clone(),
+                                clock_on: clock_on.clone(),
                             },
                         )
                         .await
@@ -228,16 +319,20 @@ impl StreamInlet {
                                     break;
                                 }
                                 log::trace!("[inlet] Connection lost: {}, re-resolving...", e);
-                                // Try to re-resolve the stream by UID
                                 tokio::time::sleep(Duration::from_millis(500)).await;
-                                let uid = source_uid.clone();
-                                match tokio::task::spawn_blocking(move || {
-                                    crate::resolver::resolve_by_property("uid", &uid, 1, 3.0)
-                                })
-                                .await
+                                let lost = current_info.clone();
+                                match tokio::task::spawn_blocking(move || Self::find_again(&lost))
+                                    .await
                                 {
-                                    Ok(mut found) if !found.is_empty() => {
-                                        current_info = found.swap_remove(0);
+                                    Ok(Some(found)) => {
+                                        if found.uid() != current_info.uid() {
+                                            // another outlet: its services are elsewhere and its
+                                            // clock may be another one
+                                            *current.lock() = found.clone();
+                                            *correction_at.lock() = None;
+                                            recovered.store(true, Ordering::SeqCst);
+                                        }
+                                        current_info = found;
                                         log::trace!("[inlet] Re-resolved, reconnecting...");
                                     }
                                     _ => {
@@ -263,6 +358,34 @@ impl StreamInlet {
         Ok(())
     }
 
+    /// The stream of a lost connection, wherever it is now. As in liblsl, a stream that has a
+    /// `source_id` is the same stream when an outlet with that `source_id` appears again —
+    /// the program that sends it was restarted, say — as long as it still has the same shape
+    /// (name, type, channel count and format: the samples must mean what they meant). A stream
+    /// without a `source_id` can only be found again as the very same outlet.
+    fn find_again(lost: &StreamInfo) -> Option<StreamInfo> {
+        let source_id = lost.source_id();
+        if source_id.is_empty() {
+            return crate::resolver::resolve_by_property("uid", &lost.uid(), 1, 3.0)
+                .into_iter()
+                .next();
+        }
+        let same_shape = |s: &StreamInfo| {
+            s.source_id() == source_id
+                && s.name() == lost.name()
+                && s.type_() == lost.type_()
+                && s.channel_count() == lost.channel_count()
+                && s.channel_format() == lost.channel_format()
+        };
+        let found = crate::resolver::resolve_by_property("source_id", &source_id, 1, 3.0);
+        // the outlet it was, if that one is still there; else the one that took its place
+        found
+            .iter()
+            .find(|s| s.uid() == lost.uid())
+            .or_else(|| found.iter().find(|s| same_shape(s)))
+            .cloned()
+    }
+
     async fn connect_and_receive(
         info: &StreamInfo,
         tx: &crossbeam_channel::Sender<Sample>,
@@ -279,7 +402,12 @@ impl StreamInlet {
             replay,
             replay_granted,
             buffer_cap,
+            clock,
+            clock_on,
         } = feed;
+        // the outlet agreed to send clock records with the samples
+        let mut clock_records = false;
+        clock_on.store(false, Ordering::SeqCst);
         // Try connecting: prefer IPv6 if available, fall back to IPv4
         let stream = Self::try_connect(info).await?;
         stream.set_nodelay(true).ok();
@@ -313,8 +441,14 @@ impl StreamInlet {
             } else {
                 String::new()
             };
+            // Likewise: only an rlsl outlet with clock records acts on this one.
+            let ask_clock = if clock.is_some() {
+                "Rlsl-Clock-Records: 1\r\n"
+            } else {
+                ""
+            };
             let request = format!(
-                "LSL:streamfeed/{} {}\r\nNative-Byte-Order: 1234\r\nEndian-Performance: 0\r\nHas-IEEE754-Floats: 1\r\nSupports-Subnormals: 1\r\nValue-Size: {}\r\nData-Protocol-Version: {}\r\nMax-Buffer-Length: {}\r\nMax-Chunk-Length: {}\r\n{}{}\r\n",
+                "LSL:streamfeed/{} {}\r\nNative-Byte-Order: 1234\r\nEndian-Performance: 0\r\nHas-IEEE754-Floats: 1\r\nSupports-Subnormals: 1\r\nValue-Size: {}\r\nData-Protocol-Version: {}\r\nMax-Buffer-Length: {}\r\nMax-Chunk-Length: {}\r\n{}{}{}\r\n",
                 proto_version,
                 info.uid(),
                 fmt.channel_bytes(),
@@ -323,6 +457,7 @@ impl StreamInlet {
                 max_chunklen,
                 ask,
                 ask_replay,
+                ask_clock,
             );
             reader
                 .get_mut()
@@ -362,6 +497,12 @@ impl StreamInlet {
                     if key.trim().eq_ignore_ascii_case("byte-order") {
                         big_endian = value.trim() == "4321";
                     }
+                    if !ask_clock.is_empty()
+                        && key.trim().eq_ignore_ascii_case("rlsl-clock-records")
+                        && value.trim() == "1"
+                    {
+                        clock_records = true;
+                    }
                     if !ask.is_empty()
                         && key.trim().eq_ignore_ascii_case("rlsl-compression")
                         && value.trim().eq_ignore_ascii_case("stream-zstd")
@@ -371,6 +512,7 @@ impl StreamInlet {
                 }
             }
             compressed.store(decoder.is_some(), Ordering::SeqCst);
+            clock_on.store(clock_records, Ordering::SeqCst);
         } else {
             let request = format!("LSL:streamfeed\r\n{} {}\r\n", max_buflen, max_chunklen);
             reader
@@ -407,9 +549,10 @@ impl StreamInlet {
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        let inbox = clock.as_ref().filter(|_| clock_records);
         for test_offset in [4, 2] {
             let received = if let Some(dec) = decoder.as_mut() {
-                read_sample_compressed(&mut reader, dec, fmt, nch).await?
+                read_sample_compressed(&mut reader, dec, fmt, nch, None).await?
             } else if use_proto_100 {
                 read_sample_async_100(&mut reader, fmt, nch).await?
             } else {
@@ -433,8 +576,11 @@ impl StreamInlet {
                 break;
             }
 
+            if clock_records && decoder.is_none() {
+                read_clock_records_plain(&mut reader, inbox).await?;
+            }
             let mut sample = if let Some(dec) = decoder.as_mut() {
-                read_sample_compressed(&mut reader, dec, fmt, nch).await?
+                read_sample_compressed(&mut reader, dec, fmt, nch, inbox).await?
             } else if use_proto_100 {
                 read_sample_async_100(&mut reader, fmt, nch).await?
             } else {
@@ -593,10 +739,16 @@ impl StreamInlet {
         if flags == PROC_NONE {
             return ts;
         }
+        // The stream goes on from another outlet: what was learned of the old one's time stamps
+        // (their jitter, the last one given out) says nothing about these.
+        let recovered = self.recovered.swap(false, Ordering::SeqCst);
         if flags & PROC_CLOCKSYNC != 0 && self.auto_clock_sync.load(Ordering::Relaxed) {
             self.keep_time_correction_fresh();
         }
         let mut proc = self.postproc.lock();
+        if recovered {
+            proc.reset();
+        }
         proc.set_clock_offset(*self.time_correction.lock());
         proc.process(ts)
     }
@@ -649,13 +801,14 @@ impl StreamInlet {
 
     /// Where the outlet answers time queries.
     fn time_service_address(&self) -> (String, u16) {
-        let v4 = self.info.v4address();
+        let current = self.current.lock();
+        let v4 = current.v4address();
         let host = if v4.is_empty() {
             "127.0.0.1".to_string()
         } else {
             v4
         };
-        (host, self.info.v4service_port())
+        (host, current.v4service_port())
     }
 
     /// Estimate the clock offset between this machine and the outlet's machine.
@@ -708,6 +861,30 @@ impl StreamInlet {
     /// Whether the open stream is being received compressed.
     pub fn is_compressed(&self) -> bool {
         self.compressed.load(Ordering::Relaxed)
+    }
+
+    /// Ask the outlet for its clock records with the samples, in the same connection (before
+    /// [`open_stream`](Self::open_stream) or the first pull; feature `ntp`). An rlsl outlet
+    /// with [`attach_clock_mesh`](crate::outlet::StreamOutlet::attach_clock_mesh) then sends
+    /// the measurements it holds, and each new one as it is made;
+    /// [`pull_clock_records`](Self::pull_clock_records) takes them. Any other outlet (liblsl,
+    /// rlsl without the feature or without a mesh) sends the stream as always.
+    #[cfg(feature = "ntp")]
+    pub fn set_clock_records(&self, on: bool) {
+        self.want_clock_records.store(on, Ordering::Relaxed);
+    }
+
+    /// The clock records received since the last call, oldest first (see
+    /// [`set_clock_records`](Self::set_clock_records)). A record sent again after a
+    /// reconnection is not returned twice.
+    #[cfg(feature = "ntp")]
+    pub fn pull_clock_records(&self) -> Vec<crate::ntp::ClockRecord> {
+        self.clock_inbox.take()
+    }
+
+    /// Whether the outlet agreed to send clock records in this connection.
+    pub fn has_clock_records(&self) -> bool {
+        self.clock_records_on.load(Ordering::Relaxed)
     }
 
     /// Ask the outlet, when the stream is opened, for what it sent in the `seconds` before:

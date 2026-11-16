@@ -22,11 +22,10 @@
 //! chunked, extendable and compressed (shuffle + deflate), and grow as samples arrive, so a
 //! recording does not sit in memory.
 //!
-//! String streams (markers) are the exception to "grow as samples arrive": their time stamps go
-//! to the file as they come, but the strings are kept in memory and written when the stream
-//! ends. A variable-length string dataset written piece by piece is valid HDF5 (h5py reads it),
-//! but `hdf5-no-c` 0.1.1 itself reads empty strings back from it; written whole, every reader
-//! gets them, the crate that wrote them included.
+//! String streams (markers) are not compressed, and go to the file one block per call: markers
+//! are few, and each one matters. (Up to rlsl-rec 0.1.0 the strings were kept in memory and
+//! written when the stream ended, because `hdf5-no-c` 0.1.1 could not read back a string
+//! dataset written piece by piece; 0.1.2 can.)
 //!
 //! Unlike XDF and Parquet-with-a-journal, an HDF5 file is only whole once it has been closed:
 //! a recorder that is killed leaves a file that may not open. The file is flushed after every
@@ -54,8 +53,7 @@ fn text(s: &str) -> VarLenUnicode {
 struct StreamGroup {
     group: hdf5::Group,
     timestamps: hdf5::Dataset,
-    /// `None` for a string stream, whose `data` is written whole at the end.
-    data: Option<hdf5::Dataset>,
+    data: hdf5::Dataset,
     format: ChannelFormat,
     nch: usize,
     rows: usize,
@@ -79,11 +77,14 @@ impl StreamGroup {
             s![from..to],
         )?;
         self.rows = to;
-        let Some(dataset) = self.data.as_ref() else {
-            // strings: kept in `text_buf` until the stream ends
-            return Ok(());
-        };
+        let dataset = &self.data;
         dataset.resize((to, nch))?;
+        if self.format == ChannelFormat::String {
+            let texts = std::mem::take(&mut self.text_buf);
+            let block = Array2::from_shape_vec((n, nch), texts)?;
+            dataset.write_slice(&block, s![from..to, ..])?;
+            return Ok(());
+        }
         let floats = std::mem::take(&mut self.float_buf);
         let ints = std::mem::take(&mut self.int_buf);
         macro_rules! write {
@@ -104,20 +105,10 @@ impl StreamGroup {
         Ok(())
     }
 
-    /// Everything that is written once, when the stream ends: what is still in memory, a
-    /// string stream's strings, the clock offsets.
+    /// Everything that is written once, when the stream ends: what is still in memory and the
+    /// clock offsets.
     fn finish(&mut self) -> anyhow::Result<()> {
         self.flush()?;
-        if self.format == ChannelFormat::String && self.data.is_none() {
-            let texts = std::mem::take(&mut self.text_buf);
-            let table = Array2::from_shape_vec((texts.len() / self.nch.max(1), self.nch), texts)?;
-            self.data = Some(
-                self.group
-                    .new_dataset_builder()
-                    .with_data(&table)
-                    .create("data")?,
-            );
-        }
         if !self.clock_offsets.is_empty() {
             let flat: Vec<f64> = self.clock_offsets.iter().flatten().copied().collect();
             let table = Array2::from_shape_vec((self.clock_offsets.len(), 2), flat)?;
@@ -237,13 +228,17 @@ impl Hdf5RecordingWriter {
             };
         }
         let data = match format {
-            ChannelFormat::Float32 => Some(dataset!(f32)),
-            ChannelFormat::Int8 => Some(dataset!(i8)),
-            ChannelFormat::Int16 => Some(dataset!(i16)),
-            ChannelFormat::Int32 => Some(dataset!(i32)),
-            ChannelFormat::Int64 => Some(dataset!(i64)),
-            ChannelFormat::String => None,
-            _ => Some(dataset!(f64)),
+            ChannelFormat::Float32 => dataset!(f32),
+            ChannelFormat::Int8 => dataset!(i8),
+            ChannelFormat::Int16 => dataset!(i16),
+            ChannelFormat::Int32 => dataset!(i32),
+            ChannelFormat::Int64 => dataset!(i64),
+            ChannelFormat::String => group
+                .new_dataset::<VarLenUnicode>()
+                .shape((0.., nch))
+                .chunk((256, nch.max(1)))
+                .create("data")?,
+            _ => dataset!(f64),
         };
         self.streams.lock().unwrap().insert(
             stream_id,

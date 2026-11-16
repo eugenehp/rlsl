@@ -18,6 +18,45 @@ pub struct TcpServer {
     info: StreamInfo,
     send_buffer: Arc<SendBuffer>,
     shutdown: Arc<AtomicBool>,
+    /// Where the outlet's clock records come from, for consumers that ask for them in-band.
+    clock: Option<ClockSource>,
+}
+
+/// The clock records of an outlet (feature `ntp`; without it there are none to send, and a
+/// request for them is not understood).
+#[cfg(feature = "ntp")]
+pub type ClockSource = Arc<crate::ntp::feed::ClockHub>;
+#[cfg(not(feature = "ntp"))]
+pub type ClockSource = ();
+#[cfg(feature = "ntp")]
+type ClockFeed = crossbeam_channel::Receiver<Arc<crate::ntp::ClockRecord>>;
+#[cfg(not(feature = "ntp"))]
+type ClockFeed = ();
+
+#[cfg(feature = "ntp")]
+fn clock_feed(source: &ClockSource) -> ClockFeed {
+    source.subscribe()
+}
+#[cfg(not(feature = "ntp"))]
+fn clock_feed(_source: &ClockSource) -> ClockFeed {}
+
+/// Append the clock records that have come in to `out`; whether there were any.
+#[cfg(feature = "ntp")]
+fn drain_clock_feed(feed: &ClockFeed, compressed: bool, out: &mut Vec<u8>) -> bool {
+    let mut any = false;
+    for r in feed.try_iter() {
+        if compressed {
+            crate::ntp::feed::encode_compressed(&r, out);
+        } else {
+            crate::ntp::feed::encode_plain(&r, out);
+        }
+        any = true;
+    }
+    any
+}
+#[cfg(not(feature = "ntp"))]
+fn drain_clock_feed(_feed: &ClockFeed, _compressed: bool, _out: &mut Vec<u8>) -> bool {
+    false
 }
 
 /// Ports returned by `TcpServer::start`.
@@ -85,12 +124,23 @@ impl TcpServer {
     /// Start the TCP server on both IPv4 and IPv6.
     /// Returns ports and a shared shutdown handle.
     pub fn start(info: StreamInfo, send_buffer: Arc<SendBuffer>, chunk_size: i32) -> TcpPorts {
+        Self::start_with_clock(info, send_buffer, chunk_size, None)
+    }
+
+    /// [`start`](Self::start), with the outlet's clock records for consumers that ask for them.
+    pub fn start_with_clock(
+        info: StreamInfo,
+        send_buffer: Arc<SendBuffer>,
+        chunk_size: i32,
+        clock: Option<ClockSource>,
+    ) -> TcpPorts {
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let server = Arc::new(TcpServer {
             info: info.clone(),
             send_buffer,
             shutdown: shutdown.clone(),
+            clock,
         });
 
         // --- IPv4 listener ---
@@ -192,6 +242,7 @@ impl TcpServer {
     }
 
     /// Send the consumer's samples until it disconnects or the outlet shuts down.
+    #[allow(clippy::too_many_arguments)]
     fn feed(
         mut stream: std::net::TcpStream,
         consumer: crate::send_buffer::BufferedConsumer,
@@ -200,6 +251,7 @@ impl TcpServer {
         effective_chunk: i32,
         mut encoder: Option<FeedEncoder>,
         suppress_subnormals: bool,
+        clock_feed: Option<ClockFeed>,
     ) {
         use std::io::Write;
         let mut chunk_count = 0;
@@ -214,6 +266,10 @@ impl TcpServer {
                 .recv_timeout(std::time::Duration::from_millis(100))
             {
                 Ok(Some(sample)) => {
+                    // clock records go between samples, ahead of this one
+                    let clock_records = clock_feed
+                        .as_ref()
+                        .is_some_and(|f| drain_clock_feed(f, encoder.is_some(), &mut chunk_buf));
                     // a consumer whose machine cannot hold subnormal numbers gets zeros for them
                     let flushed = if suppress_subnormals {
                         sample.without_subnormals()
@@ -232,7 +288,7 @@ impl TcpServer {
                         sample.serialize_100(&mut chunk_buf);
                     }
                     chunk_count += 1;
-                    if sample.pushthrough || chunk_count >= effective_chunk {
+                    if sample.pushthrough || chunk_count >= effective_chunk || clock_records {
                         if stream.write_all(&chunk_buf).is_err() {
                             break;
                         }
@@ -242,6 +298,9 @@ impl TcpServer {
                 }
                 Ok(None) => break, // sentinel
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                    if let Some(f) = clock_feed.as_ref() {
+                        drain_clock_feed(f, encoder.is_some(), &mut chunk_buf);
+                    }
                     if !chunk_buf.is_empty() {
                         if stream.write_all(&chunk_buf).is_err() {
                             break;
@@ -274,6 +333,8 @@ impl TcpServer {
         let mut encoder: Option<FeedEncoder> = None;
         let mut suppress_subnormals = false;
         let mut replay_seconds = 0.0f64;
+        // the consumer asked for the outlet's clock records in-band, and there are some to send
+        let mut send_clock = false;
 
         if command.starts_with("LSL:streamfeed/") {
             // Parse version and optional UID from command line
@@ -324,6 +385,12 @@ impl TcpServer {
                                 .filter(|s| s.is_finite() && *s > 0.0)
                                 .map_or(0.0, |s| s.min(self.send_buffer.history_seconds()));
                         }
+                        // an rlsl inlet asking for clock records with the samples (liblsl
+                        // never does)
+                        "rlsl-clock-records" => {
+                            send_clock =
+                                val.trim() == "1" && cfg!(feature = "ntp") && self.clock.is_some();
+                        }
                         "supports-subnormals" => {
                             suppress_subnormals = val.trim() == "0";
                         }
@@ -364,6 +431,11 @@ impl TcpServer {
                 // how far back the feed starts
                 compression.push_str(&format!("Rlsl-Replay: {replay_seconds}\r\n"));
             }
+            // records only in protocol 1.10 feeds, which have room for them between samples
+            send_clock &= data_protocol_version >= 110;
+            if send_clock {
+                compression.push_str("Rlsl-Clock-Records: 1\r\n");
+            }
             let response = format!(
                 "LSL/{} 200 OK\r\nUID: {}\r\nByte-Order: 1234\r\nSuppress-Subnormals: {}\r\nData-Protocol-Version: {}\r\n{}\r\n",
                 CONFIG.use_protocol_version,
@@ -386,6 +458,23 @@ impl TcpServer {
             // a request without a version is protocol 1.00
             data_protocol_version = 100;
         }
+
+        // Subscribe to the send buffer — before the test patterns go out: the consumer counts
+        // itself connected once it has read them, and every sample pushed from then on must
+        // reach it. (Subscribed after them, a sample pushed in between was lost.)
+        // The consumer's buffer: `max_buffered` is seconds of data at the stream's rate, or
+        // hundreds of samples for an irregular stream, as in liblsl. (It used to be taken as a
+        // number of samples, and a consumer that fell 360 samples behind — 0.7 s at 500 Hz —
+        // had its feed ended.)
+        let consumer = (max_buffered > 0).then(|| {
+            self.send_buffer.new_replaying_consumer(
+                crate::types::buffer_samples(
+                    self.send_buffer.granted_buffer(max_buffered),
+                    self.info.nominal_srate(),
+                ),
+                replay_seconds,
+            )
+        });
 
         if data_protocol_version < 110 {
             // The feed of protocol 1.00 is one "portable archive": its header, the stream's
@@ -417,22 +506,9 @@ impl TcpServer {
         }
         reader.get_mut().flush().await?;
 
-        if max_buffered <= 0 {
+        let Some(consumer) = consumer else {
             return Ok(());
-        }
-
-        // Subscribe to the send buffer
-        // The consumer's buffer: `max_buffered` is seconds of data at the stream's rate, or
-        // hundreds of samples for an irregular stream, as in liblsl. (It used to be taken as a
-        // number of samples, and a consumer that fell 360 samples behind — 0.7 s at 500 Hz —
-        // had its feed ended.)
-        let consumer = self.send_buffer.new_replaying_consumer(
-            crate::types::buffer_samples(
-                self.send_buffer.granted_buffer(max_buffered),
-                self.info.nominal_srate(),
-            ),
-            replay_seconds,
-        );
+        };
 
         let effective_chunk = if max_chunklen > 0 {
             max_chunklen
@@ -448,6 +524,7 @@ impl TcpServer {
         let stream = reader.into_inner().into_std()?;
         stream.set_nonblocking(false)?;
         let shutdown = self.shutdown.clone();
+        let clock_feed = self.clock.as_ref().filter(|_| send_clock).map(clock_feed);
         let _ = tokio::task::spawn_blocking(move || {
             Self::feed(
                 stream,
@@ -457,6 +534,7 @@ impl TcpServer {
                 effective_chunk,
                 encoder,
                 suppress_subnormals,
+                clock_feed,
             )
         })
         .await;

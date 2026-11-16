@@ -27,6 +27,9 @@ zstd = { version = "0.14", optional = true }
 [features]
 default = []
 compression = ["dep:zstd"]
+# A standard NTP server and client (see `ntp`): serve this machine's clock to devices that only
+# speak NTP, and map LSL time stamps onto an NTP server's UTC. Off by default; no dependencies.
+ntp = []
 # liblsl's behaviour where rlsl's own has differed since its first release: `local_clock()` is
 # the machine clock, `time_correction()` has liblsl's sign, and `PROC_CLOCKSYNC` synchronises by
 # itself. Off by default, so that existing programs behave as they always have; each of the
@@ -44,3 +47,7 @@ anyhow.workspace = true
 [[bench]]
 name = "sample_bench"
 harness = false
+
+[[example]]
+name = "ntp_bench"
+required-features = ["ntp"]

@@ -13,3 +13,8 @@ path = "src/main.rs"
 [dependencies]
 rlsl.workspace = true
 anyhow.workspace = true
+
+[features]
+default = []
+# `rlsl ntp serve|query`
+ntp = ["rlsl/ntp"]

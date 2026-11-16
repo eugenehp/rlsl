@@ -85,8 +85,9 @@ outlet.push_sample_f(&[1.0; 8], 0.0, true);
 ### Compatibility with liblsl
 
 rlsl speaks liblsl's protocol and is checked against liblsl 1.18 in both directions; what it
-adds — compressed feeds, replay for late consumers — is negotiated with headers a liblsl peer
-ignores. The C library (`rlsl-sys`) is a drop-in for liblsl and behaves like it.
+adds — compressed feeds, replay for late consumers, clock records — is negotiated with headers a
+liblsl peer ignores. The C library (`rlsl-sys`) is a drop-in for liblsl and behaves like it, and
+the Python module like pylsl (`time_correction()` included, since 0.1.1).
 
 The Rust crate keeps three defaults of its own, for the sake of programs written against it:
 `local_clock()` counts from the start of the process, `time_correction()` returns the remote
@@ -94,7 +95,7 @@ clock minus the local one, and `PROC_CLOCKSYNC` adds what the caller last measur
 behaviour instead — the machine clock, liblsl's sign, automatic synchronisation — build with
 
 ```toml
-rlsl = { version = "0.1.0", features = ["liblsl-defaults"] }
+rlsl = { version = "0.1.1", features = ["liblsl-defaults"] }
 ```
 
 or choose each at run time (`LSL_CLOCK=system`, `clock_offset()`, `set_clock_sync(true)`).
@@ -128,7 +129,7 @@ can ask an rlsl outlet for a compressed feed — about 70 % of the bytes for an 
 for bit the same values:
 
 ```toml
-rlsl = { version = "0.1.0", features = ["compression"] }
+rlsl = { version = "0.1.1", features = ["compression"] }
 ```
 
 ```rust
@@ -140,6 +141,86 @@ println!("compressed: {}", inlet.is_compressed());
 
 An outlet that cannot compress (liblsl, an older rlsl, a build without the feature) sends the
 plain protocol, and an inlet that does not ask gets exactly the bytes it always got.
+
+### Optional: NTP server and client
+
+With the cargo feature `ntp` (off by default; no extra dependencies) rlsl speaks standard NTP
+(SNTPv4) as well as LSL's own clock synchronisation. Serve the recording machine's clock to
+devices that only know NTP, or ask any NTP server where this machine's clock stands — including
+the offset from `local_clock()` to the server's UTC, to put LSL time stamps on absolute time:
+
+```toml
+rlsl = { version = "0.1.1", features = ["ntp"] }
+```
+
+```rust
+use rlsl::ntp::{self, NtpServer};
+
+let server = NtpServer::start("0.0.0.0:123".parse()?)?;   // stops when dropped
+
+let s = ntp::sync("pool.ntp.org", 4, 5.0)?;               // best of 4 probes
+println!("offset {:+.6} s, delay {:.6} s", s.offset, s.delay);
+let utc = s.unix_time(rlsl::clock::local_clock());
+```
+
+To follow clocks over time, `ClockTracker` keeps a window of measurements and reports the mean,
+min/max, jitter (standard deviation) and drift in ppm. `ClockMesh` does this across a group of
+machines: each node serves NTP and measures every peer it knows, and the nodes swap their tables
+(over TCP, on the same port number), so every node holds the full who-is-how-far-from-whom
+matrix, including pairs it doesn't measure itself:
+
+```rust
+use rlsl::ntp::{ClockMesh, ClockMeshConfig};
+
+let mesh = ClockMesh::start(ClockMeshConfig {
+    peers: vec!["10.0.0.172".into(), "10.0.0.204".into()],   // port 12300 by default
+    ..ClockMeshConfig::default()
+})?;
+for row in mesh.matrix() {            // also: mesh.matrix_json(), mesh.history(peer)
+    println!("{} → {}: {:+.3} ms, drift {:?} ppm", row.from, row.to,
+             row.stats.mean_offset * 1e3, row.stats.drift_ppm);
+}
+```
+
+The mesh measures two clocks per peer: the wall clocks (NTP) and the monotonic clocks LSL time
+stamps are taken on (`ClockKind::Mono`, LSL's own time probe). Only the latter correct LSL data,
+and only for outlets that time-stamp with the machine clock (liblsl does; rlsl with
+`LSL_CLOCK=system` or the `liblsl-defaults` feature).
+
+#### Clock measurements with the data, for offline correction
+
+An outlet passes its mesh's measurements on with the stream, and a recorder keeps them in the
+same file as the data — pick any combination:
+
+```rust
+use rlsl::ntp::ClockTransport;
+
+outlet.attach_clock_mesh(&mesh, ClockTransport::BOTH);   // or IN_BAND / COMPANION
+
+// 1. in-band: inside the stream's own connection (rlsl inlets that ask; liblsl sees nothing)
+inlet.set_clock_records(true);                          // before open_stream
+let records = inlet.pull_clock_records();               // Vec<ClockRecord>, history first
+
+// 2. companion: a stream "<name> (clock)", type ClockSync, source id "<source_id>#clock",
+//    that any LSL recorder (LabRecorder too) can record
+```
+
+`rlsl-rec` (feature `ntp`) records them, chosen with `RLSL_REC_CLOCK=in-band,companion,mesh`:
+in-band records become a `ClockSync` stream next to their data stream; companion streams are
+added to the recording; and with `mesh` (and `RLSL_REC_CLOCK_PEERS`) the recorder measures the
+source machines itself and writes those offsets as the streams' XDF clock offsets — checked
+against LSL's own probe, which is used instead when they disagree. Each stream's footer says
+which (`<clock_offsets><from_clock_mesh>`/`<from_lsl_probe>`).
+
+Offline, `ClockFit::from_records(&records, "msi", "mm4", ClockKind::Mono)` fits a
+delay-weighted line (offset and drift) to the records; add `fit.offset_at(t)` to a time stamp
+of `msi` to put it on `mm4`'s clock. Each record is `from, to, clock, at, offset, delay,
+at_unix`: `to`'s clock is `offset` seconds ahead of `from`'s at time `at` on `from`'s clock.
+
+The CLI has it behind the same feature (`ntp serve`, `ntp query`, `ntp track <server>`,
+`ntp mesh --peer host1,host2`, and `gen --clock-peers host1,host2` for a test signal that
+carries its measurements): `cargo run -p rlsl-cli --features ntp -- ntp serve
+--port 12300` and `... -- ntp query pool.ntp.org`.
 
 ### Optional: HDF5 recordings
 

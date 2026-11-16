@@ -13,6 +13,8 @@ pub mod clock;
 pub mod compress;
 pub mod config;
 pub mod inlet;
+#[cfg(feature = "ntp")]
+pub mod ntp;
 pub mod outlet;
 pub mod postproc;
 pub mod resolver;

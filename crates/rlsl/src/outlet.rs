@@ -23,6 +23,12 @@ pub struct StreamOutlet {
     shutdown: Arc<AtomicBool>,
     #[allow(dead_code)]
     chunk_size: i32,
+    /// Clock records for consumers that ask for them in-band.
+    #[cfg(feature = "ntp")]
+    clock: Arc<crate::ntp::feed::ClockHub>,
+    /// The companion stream the clock records also go out on, once there is one.
+    #[cfg(feature = "ntp")]
+    clock_companion: parking_lot::Mutex<Option<Arc<StreamOutlet>>>,
 }
 
 impl StreamOutlet {
@@ -53,7 +59,18 @@ impl StreamOutlet {
         );
 
         // Start TCP data server (IPv4 + IPv6)
-        let tcp = TcpServer::start(info.clone(), send_buffer.clone(), chunk_size);
+        #[cfg(feature = "ntp")]
+        let clock = Arc::new(crate::ntp::feed::ClockHub::default());
+        #[cfg(feature = "ntp")]
+        let clock_source = Some(clock.clone());
+        #[cfg(not(feature = "ntp"))]
+        let clock_source = None;
+        let tcp = TcpServer::start_with_clock(
+            info.clone(),
+            send_buffer.clone(),
+            chunk_size,
+            clock_source,
+        );
         info.set_v4data_port(tcp.v4_port);
         info.set_v6data_port(tcp.v6_port);
 
@@ -72,7 +89,72 @@ impl StreamOutlet {
             send_buffer,
             shutdown: tcp_shutdown,
             chunk_size,
+            #[cfg(feature = "ntp")]
+            clock,
+            #[cfg(feature = "ntp")]
+            clock_companion: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Pass on the measurements of `mesh` — this machine's clock against the others' — with
+    /// this stream, so that whoever records it can correct its time stamps afterwards
+    /// (feature `ntp`). `transport` says how:
+    ///
+    /// * in-band: inside this stream's own connection, to rlsl inlets that ask
+    ///   ([`StreamInlet::set_clock_records`](crate::inlet::StreamInlet::set_clock_records));
+    ///   a consumer that connects later gets the measurements from before too;
+    /// * companion: as a second stream, of type
+    ///   [`CLOCK_STREAM_TYPE`](crate::ntp::CLOCK_STREAM_TYPE) and source id
+    ///   [`clock_source_id`](crate::ntp::clock_source_id), which any LSL recorder can record.
+    ///
+    /// The measurements already made are passed on as well. Liblsl consumers see no
+    /// difference in the stream itself.
+    #[cfg(feature = "ntp")]
+    pub fn attach_clock_mesh(
+        &self,
+        mesh: &crate::ntp::ClockMesh,
+        transport: crate::ntp::ClockTransport,
+    ) {
+        let hub = transport.in_band.then(|| Arc::downgrade(&self.clock));
+        let companion = transport.companion.then(|| {
+            let mut slot = self.clock_companion.lock();
+            let outlet = slot.get_or_insert_with(|| {
+                let info = crate::ntp::clock_stream_info(&self.info, mesh.node_id());
+                let outlet = StreamOutlet::new(&info, 0, 360);
+                // the measurements of the last hour for a recorder that starts late
+                outlet.set_history(3600.0);
+                Arc::new(outlet)
+            });
+            Arc::downgrade(outlet)
+        });
+        mesh.subscribe(move |record| {
+            let mut alive = false;
+            if let Some(hub) = hub.as_ref().and_then(|h| h.upgrade()) {
+                hub.push(record.clone());
+                alive = true;
+            }
+            if let Some(outlet) = companion.as_ref().and_then(|c| c.upgrade()) {
+                outlet.push_sample_str(&record.to_fields(), 0.0, true);
+                alive = true;
+            }
+            alive
+        });
+    }
+
+    /// The description of this stream's companion clock stream, once
+    /// [`attach_clock_mesh`](Self::attach_clock_mesh) has made one.
+    #[cfg(feature = "ntp")]
+    pub fn clock_companion_info(&self) -> Option<StreamInfo> {
+        self.clock_companion
+            .lock()
+            .as_ref()
+            .map(|o| o.info().clone())
+    }
+
+    /// Clock records this outlet holds for consumers that ask for them in-band.
+    #[cfg(feature = "ntp")]
+    pub fn clock_records_held(&self) -> usize {
+        self.clock.len()
     }
 
     /// Samples this outlet has had to drop because a consumer fell further behind than its

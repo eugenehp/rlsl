@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-11-15
+
+Everything new here is behind the cargo feature `ntp`, off by default: without it the Rust crate,
+the wire protocol and `rlsl-rec` behave as in 0.1.0, apart from the fixes below. **One change
+breaks Python programs**: `time_correction()` of the Python module now has pylsl's sign (see
+*Changed*).
+
+### Added
+
+- **NTP server and client** (`rlsl::ntp`, cargo feature `ntp`, off by default; no new
+  dependencies). `NtpServer` serves this machine's wall clock over SNTPv4 (stratum 10 by
+  default, like chrony's local clock); `ntp::query` / `ntp::sync` ask any NTP server for the
+  clock offset and round-trip delay, and also give `lsl_offset`, what to add to a
+  `local_clock()` time stamp to get the server's Unix time. Without the feature nothing changes.
+- **Clock tracking and a clock mesh** (same feature). `ClockTracker` keeps a window of offset
+  measurements with mean, min/max, jitter and drift (ppm). `ClockMesh` runs a node that serves
+  NTP, measures its peers on a timer and swaps measurement tables with them over TCP, so every
+  node holds the full matrix of offsets between the nodes. `rlsl-cli` gains `rlsl ntp serve`,
+  `query`, `track` and `mesh` behind its own `ntp` feature.
+- **Clock measurements that travel with the data** (same feature). Mesh nodes also measure each
+  other's monotonic clocks — the ones LSL time stamps are on — with LSL's time probe, which
+  their NTP port now answers. `StreamOutlet::attach_clock_mesh` passes the measurements on as
+  `ClockRecord`s: in-band, inside the stream's own connection to rlsl inlets that ask
+  (`StreamInlet::set_clock_records` / `pull_clock_records`; negotiated with an
+  `Rlsl-Clock-Records` header that liblsl ignores, history sent first), and/or on a companion
+  stream of type `ClockSync`. `ClockFit` fits offset and drift to records offline.
+- **`rlsl-rec` records clock measurements** (feature `ntp`, `ClockSyncOptions` or
+  `RLSL_REC_CLOCK=in-band,companion,mesh`): in-band records as a clock stream next to their
+  data stream, companion clock streams with their data streams, and clock offsets measured by
+  the recorder's own mesh node, checked against LSL's probe of each stream. Stream footers say
+  where the clock offsets came from. New example `record` records without the TUI.
+- Example `ntp_bench` (feature `ntp`): record encoding and fitting, NTP and LSL-probe round
+  trips, the cost of in-band clock records on a data stream, and precision against remote
+  nodes.
+- `RecordingState::streams_open` (`rlsl-rec`): how many of a recording's streams are
+  connected.
+- `rlsl gen --source-id`, and with feature `ntp` `--clock-peers` / `--clock-transport` /
+  `--clock-port` / `--clock-id` / `--clock-interval`.
+
+### Changed
+
+- **`pylsl.StreamInlet.time_correction()` (the Python module, `rlsl-py`) is pylsl's now**: the
+  number of seconds to add to a stream's time stamps to get this machine's `local_clock()`
+  time, and a `TimeoutError` when the outlet does not answer. It used to return the opposite
+  sign, and `0.0` without an answer — a program written for pylsl subtracted where it should
+  have added. The Rust crate's `StreamInlet::time_correction()` is unchanged (`clock_offset()`
+  is the liblsl convention there), and the C library has had liblsl's since 0.0.9.
+- **HDF5 recordings write a string stream's strings as they arrive** (`rlsl-rec`, feature
+  `hdf5`), like every other stream, instead of keeping them in memory until the stream ends —
+  the way around a reading bug that `hdf5-no-c` 0.1.2 fixed. The files have the same layout.
+
+### Fixed
+
+- **An inlet did not recover a stream whose sender was restarted.** Recovery looked for the
+  lost outlet's `uid`, which a restarted program never has again, so the inlet waited forever
+  while the stream was back on the network. As in liblsl, a stream with a `source_id` is now
+  found again by it (same name, type, channel count and format); one without can still only
+  be the very outlet it was. After such a recovery the inlet asks the new outlet's time
+  service, measures the clock offset afresh before the next time stamp is corrected (a
+  restarted sender may count time from another zero), and starts the smoothing and
+  monotonicity of time stamps over.
+- **A sample pushed just as a consumer connected could be lost.** The outlet subscribed the
+  consumer to its samples only after sending the test patterns that tell the consumer it is
+  connected; a sample pushed in between reached nobody. The consumer is now subscribed first:
+  once `open_stream` has returned, every sample pushed afterwards arrives.
+- **`rlsl-rec` dropped the last samples of a recording.** Samples that had arrived but not yet
+  been written when the recording was stopped (up to half a second of each stream) were left
+  out of the file. They are now written before the stream's footer.
+- The marker-recording test waited for any consumer of its stream, which another LSL program on
+  the machine could be; it now waits for the recorder's own connection.
+
 ## [0.1.0] — 2026-11-15
 
 ### Changed
@@ -340,7 +411,8 @@ Nothing below changes what existing code gets: `local_clock()`, `time_correction
 ### Known Gaps
 - mDNS/Bonjour discovery not implemented (LSL uses UDP multicast as primary discovery)
 
-[Unreleased]: https://github.com/eugenehp/rlsl/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/eugenehp/rlsl/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/eugenehp/rlsl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/eugenehp/rlsl/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/eugenehp/rlsl/compare/v0.0.8...v0.0.9
 [0.0.1]: https://github.com/eugenehp/rlsl/releases/tag/v0.0.1
