@@ -16,7 +16,7 @@ rlsl/
 │   ├── rlsl/       Pure Rust LSL library (rlib)
 │   ├── rlsl-sys/        C ABI shared library (liblsl.dylib/so/dll)
 │   ├── rlsl-cli/        Unified CLI tool (`rrlsl list`, `rrlsl gen`, `rrlsl bench`)
-│   ├── rlsl-rec/        Recording engine + TUI recorder (XDF/Parquet/HDF5)
+│   ├── rlsl-rec/        Recording engine + TUI recorder (XDF/Parquet, HDF5 optional)
 │   ├── rrlsl-rec-gui/    eGUI recorder with live viewer
 │   ├── rlsl-py/         Python bindings (PyO3 + numpy)
 │   ├── rlsl-wasm/       WebSocket bridge + WASM browser client
@@ -140,6 +140,17 @@ println!("compressed: {}", inlet.is_compressed());
 
 An outlet that cannot compress (liblsl, an older rlsl, a build without the feature) sends the
 plain protocol, and an inlet that does not ask gets exactly the bytes it always got.
+
+### Optional: HDF5 recordings
+
+`rlsl-rec` records XDF and Parquet out of the box. With the cargo feature `hdf5` (off by
+default) it can also write one `.h5` file per recording, through
+[`hdf5-no-c`](https://crates.io/crates/hdf5-no-c), a pure-Rust HDF5 implementation, so there's
+no libhdf5 to install:
+
+```bash
+cargo install rlsl-rec --features hdf5   # in the TUI, press `f` until the format is HDF5
+```
 
 ## Python API
 

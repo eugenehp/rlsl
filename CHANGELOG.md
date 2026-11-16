@@ -297,7 +297,7 @@ Nothing below changes what existing code gets: `local_clock()`, `time_correction
   - `run_benchmarks.sh` + `plot_benchmarks.py` for reproducibility
   - All 43 runs: 0.00% data loss, ~52µs mean latency at 10 MB/s throughput
 
-## [Unreleased]
+## [0.0.1] — 2026-03-27
 
 ### Added
 - `rlsl-cli` — unified CLI tool combining gen, record, convert, bench, and list commands
@@ -314,10 +314,6 @@ Nothing below changes what existing code gets: `local_clock()`, `time_correction
 - `cargo-deny` configuration for license and dependency auditing
 - Cross-platform CI matrix (Linux x86_64, macOS aarch64, Windows x86_64)
 - npm publish workflow for WASM package
-
-## [0.1.0] — 2026-03-28
-
-### Added
 - **rlsl**: Pure-Rust LSL implementation with full protocol 1.00 + 1.10 support
   - `StreamInfo` — stream metadata with XPath-like query matching
   - `StreamOutlet` — publish data on the network
@@ -345,4 +341,6 @@ Nothing below changes what existing code gets: `local_clock()`, `time_correction
 - mDNS/Bonjour discovery not implemented (LSL uses UDP multicast as primary discovery)
 
 [Unreleased]: https://github.com/eugenehp/rlsl/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/eugenehp/rlsl/releases/tag/v0.1.0
+[0.1.0]: https://github.com/eugenehp/rlsl/compare/v0.0.9...v0.1.0
+[0.0.9]: https://github.com/eugenehp/rlsl/compare/v0.0.8...v0.0.9
+[0.0.1]: https://github.com/eugenehp/rlsl/releases/tag/v0.0.1
