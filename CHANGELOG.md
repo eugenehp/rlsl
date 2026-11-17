@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-11-17
+
+### Fixed
+
+- **Clock correction was wrong on a slow link.** `time_correction()` read each answer of the
+  outlet's time service against the query it had sent last, not the one the answer echoes. With
+  a link slower than the probe interval (64 ms) the answer to an earlier query arrives while a
+  later one is waited for: the exchange looked quick, passed the round-trip limit, and gave an
+  offset wrong by a good part of the delay — with 400 ms one way, clock-synchronised time stamps
+  ran 90 ms ahead, and stayed off until the link was normal again. An answer is now read against
+  the query time it carries, so a slow exchange is seen to be slow and is not used.
+
+- **An inlet took seconds, sometimes tens of seconds, to recover a restarted stream whose
+  device publishes more than one stream.** The lost stream is looked for by its `source_id`
+  and the search ends with the first answer; the streams of one device share a `source_id` (an
+  EEG and its accelerometer), so the answer was the sibling as often as not, and the round was
+  wasted. It is now looked for by `source_id` and name.
+
+### Added
+
+- **DNS-SD (Bonjour / Avahi) discovery** (`rlsl::mdns`, cargo feature `mdns`, off by default;
+  one optional dependency, `mdns-sd`). Every outlet is also announced as a `_lsl._tcp` service
+  whose TXT record says what the stream is, so `dns-sd -B _lsl._tcp` and `avahi-browse` show
+  it; and a resolver also asks the machines that announce streams, directly. Streams are then
+  found on networks that carry mDNS but not LSL's own multicast groups. What a resolver
+  returns is unchanged — the announcement only says where to ask — and peers without the
+  feature (liblsl included) notice nothing. `LSL_MDNS=0` switches it off at run time;
+  `mdns::browse` lists the announcements for tools.
+
 ## [0.1.1] — 2026-11-15
 
 Everything new here is behind the cargo feature `ntp`, off by default: without it the Rust crate,
@@ -411,7 +440,8 @@ Nothing below changes what existing code gets: `local_clock()`, `time_correction
 ### Known Gaps
 - mDNS/Bonjour discovery not implemented (LSL uses UDP multicast as primary discovery)
 
-[Unreleased]: https://github.com/eugenehp/rlsl/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/eugenehp/rlsl/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/eugenehp/rlsl/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/eugenehp/rlsl/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/eugenehp/rlsl/compare/v0.0.9...v0.1.0
 [0.0.9]: https://github.com/eugenehp/rlsl/compare/v0.0.8...v0.0.9

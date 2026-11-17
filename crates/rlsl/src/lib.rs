@@ -13,6 +13,8 @@ pub mod clock;
 pub mod compress;
 pub mod config;
 pub mod inlet;
+#[cfg(feature = "mdns")]
+pub mod mdns;
 #[cfg(feature = "ntp")]
 pub mod ntp;
 pub mod outlet;

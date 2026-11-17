@@ -45,6 +45,9 @@ pub fn resolve_query(query: &str, minimum: i32, timeout: f64) -> Vec<StreamInfo>
 }
 
 async fn resolve_query_async(query: &str, minimum: i32, timeout: f64) -> Vec<StreamInfo> {
+    // machines that announce streams by DNS-SD are asked directly, from the first query on
+    #[cfg(feature = "mdns")]
+    crate::mdns::follow_announcements();
     let wait = Duration::from_secs_f64(timeout.max(0.01));
 
     // Create IPv4 receiver socket

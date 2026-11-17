@@ -31,10 +31,10 @@ jobs:
       # rlsl-py and rlsl-fuzz are outside the workspace
       - name: Clippy (workspace, all targets)
         run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Clippy (ntp feature)
+      - name: Clippy (optional features)
         run: >
           cargo clippy -p rlsl -p rlsl-rec -p rlsl-cli --all-targets
-          --features rlsl/ntp,rlsl/compression,rlsl-rec/ntp,rlsl-cli/ntp -- -D warnings
+          --features rlsl/ntp,rlsl/compression,rlsl/mdns,rlsl-rec/ntp,rlsl-cli/ntp -- -D warnings
 
   # ── Dependency audit ──────────────────────────────────────────────
   deny:
@@ -119,6 +119,9 @@ jobs:
 
       - name: Unit tests (rlsl, ntp feature)
         run: cargo test -p rlsl --features ntp,compression --target ${{ matrix.target }}
+      # mDNS needs a network interface that carries multicast: the test finds its own outlet
+      - name: Unit tests (rlsl, mdns feature)
+        run: cargo test -p rlsl --features mdns --target ${{ matrix.target }} -- --skip an_outlet_is_announced_and_found
 
       - name: E2E tests (rlsl-rec)
         if: runner.os == 'Linux'

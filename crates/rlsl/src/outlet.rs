@@ -23,6 +23,9 @@ pub struct StreamOutlet {
     shutdown: Arc<AtomicBool>,
     #[allow(dead_code)]
     chunk_size: i32,
+    /// The stream's DNS-SD announcement, withdrawn with the outlet.
+    #[cfg(feature = "mdns")]
+    _announcement: Option<crate::mdns::Announcement>,
     /// Clock records for consumers that ask for them in-band.
     #[cfg(feature = "ntp")]
     clock: Arc<crate::ntp::feed::ClockHub>,
@@ -85,6 +88,8 @@ impl StreamOutlet {
         let tcp_shutdown = tcp.shutdown;
 
         StreamOutlet {
+            #[cfg(feature = "mdns")]
+            _announcement: crate::mdns::announce(&info),
             info: info.clone(),
             send_buffer,
             shutdown: tcp_shutdown,

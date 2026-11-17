@@ -109,7 +109,16 @@ async fn time_correction_async(host: &str, port: u16, timeout: f64) -> Result<Op
 
             // Reply format: " <wave_id> <t0_echo> <t1> <t2>"
             if parts.len() >= 4 {
-                if let (Ok(t1), Ok(t2)) = (parts[2].parse::<f64>(), parts[3].parse::<f64>()) {
+                // The query this answers is the one whose time it echoes — not the one
+                // sent last. On a slow link the answer to an earlier query arrives while
+                // a later one is waited for; read against the later one's time it looked
+                // like a quick exchange, and put the clocks apart by a good part of the
+                // link's delay (measured: 90 ms on time stamps, with 400 ms one way).
+                if let (Ok(t0), Ok(t1), Ok(t2)) = (
+                    parts[1].parse::<f64>(),
+                    parts[2].parse::<f64>(),
+                    parts[3].parse::<f64>(),
+                ) {
                     let rtt = (t3 - t0) - (t2 - t1);
                     let offset = ((t1 - t0) + (t2 - t3)) / 2.0;
 

@@ -23,6 +23,8 @@ log.workspace = true
 # Stream compression between rlsl inlets and outlets (see `compress`). Off by default: the
 # core then has no C dependency and behaves on the wire exactly as before.
 zstd = { version = "0.14", optional = true }
+# DNS-SD (Bonjour / Avahi) announcements and browsing, for the `mdns` feature. No async runtime.
+mdns-sd = { version = "0.21", optional = true, default-features = false }
 
 [features]
 default = []
@@ -36,6 +38,12 @@ ntp = []
 # three can also be chosen at run time (see the `clock` module and `StreamInlet`). The C
 # library (`rlsl-sys`, the liblsl drop-in) behaves like liblsl without this feature.
 liblsl-defaults = []
+# Streams are also announced by DNS-SD (Bonjour, Avahi) as `_lsl._tcp` services, and a resolver
+# also asks the machines that announce some: found on networks that carry mDNS and not LSL's own
+# multicast groups, and visible to any DNS-SD browser. What a resolver returns is the same —
+# the announcement only says where to ask. Off by default; `LSL_MDNS=0` switches it off at run
+# time. Nothing changes for peers without it.
+mdns = ["dep:mdns-sd"]
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

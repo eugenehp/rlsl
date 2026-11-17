@@ -377,7 +377,15 @@ impl StreamInlet {
                 && s.channel_count() == lost.channel_count()
                 && s.channel_format() == lost.channel_format()
         };
-        let found = crate::resolver::resolve_by_property("source_id", &source_id, 1, 3.0);
+        // By name as well as by source: a device's streams share its `source_id` (its EEG
+        // and its accelerometer, say), and the search ends with the first answer — which
+        // was the wrong stream as often as not, and each such round cost seconds.
+        let (name, quoted) = (lost.name(), |t: &str| !t.contains('\''));
+        let found = if quoted(&source_id) && quoted(&name) {
+            crate::resolver::resolve_query(&format!("source_id='{source_id}' and name='{name}'"), 1, 3.0)
+        } else {
+            crate::resolver::resolve_by_property("source_id", &source_id, 0, 3.0)
+        };
         // the outlet it was, if that one is still there; else the one that took its place
         found
             .iter()

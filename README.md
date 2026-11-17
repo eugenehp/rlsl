@@ -95,7 +95,7 @@ clock minus the local one, and `PROC_CLOCKSYNC` adds what the caller last measur
 behaviour instead — the machine clock, liblsl's sign, automatic synchronisation — build with
 
 ```toml
-rlsl = { version = "0.1.1", features = ["liblsl-defaults"] }
+rlsl = { version = "0.1.2", features = ["liblsl-defaults"] }
 ```
 
 or choose each at run time (`LSL_CLOCK=system`, `clock_offset()`, `set_clock_sync(true)`).
@@ -129,7 +129,7 @@ can ask an rlsl outlet for a compressed feed — about 70 % of the bytes for an 
 for bit the same values:
 
 ```toml
-rlsl = { version = "0.1.1", features = ["compression"] }
+rlsl = { version = "0.1.2", features = ["compression"] }
 ```
 
 ```rust
@@ -150,7 +150,7 @@ devices that only know NTP, or ask any NTP server where this machine's clock sta
 the offset from `local_clock()` to the server's UTC, to put LSL time stamps on absolute time:
 
 ```toml
-rlsl = { version = "0.1.1", features = ["ntp"] }
+rlsl = { version = "0.1.2", features = ["ntp"] }
 ```
 
 ```rust
@@ -232,6 +232,20 @@ no libhdf5 to install:
 ```bash
 cargo install rlsl-rec --features hdf5   # in the TUI, press `f` until the format is HDF5
 ```
+
+## Discovery by Bonjour / Avahi (feature `mdns`)
+
+```toml
+rlsl = { version = "0.1", features = ["mdns"] }
+```
+
+Every outlet is then also announced by DNS-SD as a `_lsl._tcp` service (`dns-sd -B _lsl._tcp`,
+`avahi-browse -r _lsl._tcp` show it, with the stream's name, type and source id in its TXT
+record), and a resolver also asks the machines that announce streams, directly. Streams are
+found on networks that carry mDNS but not LSL's own multicast groups; what a resolver returns
+is the same either way, and peers without the feature — liblsl included — notice nothing.
+`LSL_MDNS=0` switches it off at run time. Like LSL's own discovery it stays on the local
+link: across routers use an mDNS reflector, or `KnownPeers`.
 
 ## Python API
 
